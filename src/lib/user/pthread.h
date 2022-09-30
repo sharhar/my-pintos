@@ -1,7 +1,7 @@
 #ifndef __LIB_USER_PTHREAD_H
 #define __LIB_USER_PTHREAD_H
 
-#include <debug.h>
+#include "../debug.h"
 #include <stdbool.h>
 
 /* Thread identifiers and thread function */

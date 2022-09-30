@@ -54,6 +54,8 @@ pid_t process_execute(const char* file_name) {
   char* fn_copy;
   tid_t tid;
 
+  // TODO: add some synchronized bool for reading sucess value from process after load
+
   sema_init(&temporary, 0);
   /* Make a copy of FILE_NAME.
      Otherwise there's a race between the caller and load(). */
@@ -62,8 +64,18 @@ pid_t process_execute(const char* file_name) {
     return TID_ERROR;
   strlcpy(fn_copy, file_name, PGSIZE);
 
+  size_t filenameLen = strlen(file_name);
+  int real_file_name_len = 0;
+
+  for(; real_file_name_len < filenameLen; real_file_name_len++) {
+    if(file_name[real_file_name_len] == ' ') break; 
+  }
+
+  char real_file_name[real_file_name_len+1];
+  strlcpy(real_file_name, file_name, real_file_name_len+1);
+
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create(file_name, PRI_DEFAULT, start_process, fn_copy);
+  tid = thread_create(real_file_name, PRI_DEFAULT, start_process, fn_copy);
   if (tid == TID_ERROR)
     palloc_free_page(fn_copy);
   return tid;
@@ -87,6 +99,7 @@ static void start_process(void* file_name_) {
     // does not try to activate our uninitialized pagedir
     new_pcb->pagedir = NULL;
     t->pcb = new_pcb;
+    t->pcb->in_syscall = false;
 
     // Continue initializing the PCB as normal
     t->pcb->main_thread = t;
@@ -118,6 +131,8 @@ static void start_process(void* file_name_) {
     sema_up(&temporary);
     thread_exit();
   }
+
+  // TODO: set sucess && pcb_sucess to some value stored on the caller's stack so it can be passed back to the caller of exec
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
@@ -259,7 +274,7 @@ struct Elf32_Phdr {
 #define PF_W 2 /* Writable. */
 #define PF_R 4 /* Readable. */
 
-static bool setup_stack(void** esp);
+static bool setup_stack(void** esp, int argc, char** argv, size_t argvSize);
 static bool validate_segment(const struct Elf32_Phdr*, struct file*);
 static bool load_segment(struct file* file, off_t ofs, uint8_t* upage, uint32_t read_bytes,
                          uint32_t zero_bytes, bool writable);
@@ -275,6 +290,38 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
   off_t file_ofs;
   bool success = false;
   int i;
+
+  size_t filenameLen = strlen(file_name);
+  int argc_max = 2;
+
+  for(int i = 0; i < filenameLen; i++) {
+    if(file_name[i] == ' ') argc_max++;
+  }
+
+  size_t argv_size = argc_max * 4 + strlen(file_name) + 1;
+  char argvMem[argv_size];
+  char** argv = (char**) argvMem;
+
+  size_t argvOffset = 0;
+
+  char* argvBaseMemPtr = argvMem + argc_max * 4;
+  char* argvBaseStackPtr = ((char*)PHYS_BASE) - argv_size + argc_max * 4;
+
+  char* token;
+  char* rest = file_name;
+  int argc = 0;
+  while ((token = strtok_r(rest, " ", &rest))) {
+    size_t tokenSize = strlen(token)+1;
+    strlcpy(argvBaseMemPtr, token, tokenSize);
+
+    argv[argc] = argvBaseStackPtr;
+    argvBaseStackPtr += tokenSize;
+    argvBaseMemPtr += tokenSize;
+
+    argc++;
+  }
+
+  argv[argc] = NULL;
 
   /* Allocate and activate page directory. */
   t->pcb->pagedir = pagedir_create();
@@ -348,7 +395,7 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
   }
 
   /* Set up stack. */
-  if (!setup_stack(esp))
+  if (!setup_stack(esp, argc, argv, argv_size))
     goto done;
 
   /* Start address. */
@@ -465,17 +512,36 @@ static bool load_segment(struct file* file, off_t ofs, uint8_t* upage, uint32_t 
 
 /* Create a minimal stack by mapping a zeroed page at the top of
    user virtual memory. */
-static bool setup_stack(void** esp) {
+static bool setup_stack(void** esp, int argc, char** argv, size_t argvSize) {
   uint8_t* kpage;
   bool success = false;
 
   kpage = palloc_get_page(PAL_USER | PAL_ZERO);
   if (kpage != NULL) {
     success = install_page(((uint8_t*)PHYS_BASE) - PGSIZE, kpage, true);
-    if (success)
-      *esp = PHYS_BASE;
-    else
+    if (success) {
+      char* argv_mem_block = ((char*)PHYS_BASE) - argvSize;
+      memcpy(argv_mem_block, (void*)argv, argvSize);
+
+      char* new_esp = argv_mem_block;
+
+      size_t padding = ((uint32_t)new_esp - 8) % 16;
+
+      new_esp -= padding;
+
+      new_esp -= 4;
+      *((char**)new_esp) = (char**)(argv_mem_block);
+
+      new_esp -= 4;
+      *((int*)new_esp) = argc;
+
+      new_esp -= 4;
+      *((void**)new_esp) = NULL;
+      
+      *esp = (void*)new_esp;
+    } else {
       palloc_free_page(kpage);
+    }
   }
   return success;
 }

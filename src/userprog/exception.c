@@ -78,6 +78,8 @@ static void kill(struct intr_frame* f) {
       printf("%s: dying due to interrupt %#04x (%s).\n", thread_name(), f->vec_no,
              intr_name(f->vec_no));
       intr_dump_frame(f);
+      char* proc_name = thread_current()->pcb->process_name;
+      printf("%s: exit(%d)\n", proc_name, -1);
       process_exit();
       NOT_REACHED();
 
@@ -134,6 +136,17 @@ static void page_fault(struct intr_frame* f) {
   not_present = (f->error_code & PF_P) == 0;
   write = (f->error_code & PF_W) != 0;
   user = (f->error_code & PF_U) != 0;
+
+  if(!user) {
+      struct process* proc = thread_current()->pcb;
+      
+      if(proc->in_syscall) {
+         char* proc_name = proc->process_name;
+         printf("%s: exit(%d)\n", proc_name, -1);
+         process_exit();
+         NOT_REACHED();
+      }
+  }
 
   /* To implement virtual memory, delete the rest of the function
      body, and replace it with code that brings in the page to
