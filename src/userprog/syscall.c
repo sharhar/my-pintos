@@ -13,7 +13,16 @@
 static void syscall_handler(struct intr_frame*);
 
 static void check_user_pointer(char* userPtr, size_t memSize) {
-  if(!is_user_vaddr(userPtr) || !is_user_vaddr(userPtr + memSize)) {
+  /* We have a clause in exception.c to handle invalid pointer dereferencing of a
+      userspace pointer while in kernel mode. Therefore, the only validation we need 
+      to do in syscall.c with user pointers is to make sure that they are below PHYS_BASE 
+      (which we can check for using the `is_user_vaddr` function). Furthermore, we only 
+      need to check the last byte of the provided user buffer since the only thing we need 
+      to know is whether or not the buffer is fully within userspace, and the begining of 
+      the buffer will always be below the end of it, we only need to check the end to ensure
+      that the whole block of memory is within userspace. */
+
+  if(!is_user_vaddr(userPtr + memSize)) { 
     char* proc_name = thread_current()->pcb->process_name;
     printf("%s: exit(%d)\n", proc_name, -1);
     process_exit();
@@ -47,10 +56,6 @@ static void syscall_halt(uint32_t* args, uint32_t* f_eax) {
 void syscall_init(void) { intr_register_int(0x30, 3, INTR_ON, syscall_handler, "syscall"); }
 
 static void syscall_handler(struct intr_frame* f) {
-  struct process* proc = thread_current()->pcb;
-
-  proc->in_syscall = true;
-
   uint32_t* args = ((uint32_t*)f->esp);
 
   check_user_pointer((char*)args, 3);
@@ -61,6 +66,4 @@ static void syscall_handler(struct intr_frame* f) {
     SYSCALL_ENTRY(SYS_PRACTICE, syscall_practice, 1)
     SYSCALL_ENTRY(SYS_HALT, syscall_halt, 0)
   }
-
-  proc->in_syscall = false;
 }

@@ -5,6 +5,7 @@
 #include "userprog/process.h"
 #include "threads/interrupt.h"
 #include "threads/thread.h"
+#include "threads/vaddr.h"
 
 /* Number of page faults processed. */
 static long long page_fault_cnt;
@@ -137,15 +138,12 @@ static void page_fault(struct intr_frame* f) {
   write = (f->error_code & PF_W) != 0;
   user = (f->error_code & PF_U) != 0;
 
-  if(!user) {
-      struct process* proc = thread_current()->pcb;
-      
-      if(proc->in_syscall) {
-         char* proc_name = proc->process_name;
-         printf("%s: exit(%d)\n", proc_name, -1);
-         process_exit();
-         NOT_REACHED();
-      }
+  // if the page_fault occured in kernel mode at a userspace address, we 
+  // close the user process instead of shutting down the machine
+  if(!user && is_user_vaddr(fault_addr)) { 
+      printf("%s: exit(%d)\n", thread_current()->pcb->process_name, -1);
+      process_exit();
+      NOT_REACHED();
   }
 
   /* To implement virtual memory, delete the rest of the function

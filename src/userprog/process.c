@@ -64,8 +64,12 @@ pid_t process_execute(const char* file_name) {
     return TID_ERROR;
   strlcpy(fn_copy, file_name, PGSIZE);
 
+  /* since the file_name variable contains both the filename
+     and the arguments, we have to parse out just the filename
+     before we give it to the thread_create. Otherwise, our threads
+     have the wrong name and it messes with the autograder. */
   size_t filenameLen = strlen(file_name);
-  int real_file_name_len = 0;
+  size_t real_file_name_len = 0;
 
   for(; real_file_name_len < filenameLen; real_file_name_len++) {
     if(file_name[real_file_name_len] == ' ') break; 
@@ -99,7 +103,6 @@ static void start_process(void* file_name_) {
     // does not try to activate our uninitialized pagedir
     new_pcb->pagedir = NULL;
     t->pcb = new_pcb;
-    t->pcb->in_syscall = false;
 
     // Continue initializing the PCB as normal
     t->pcb->main_thread = t;
@@ -290,25 +293,32 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
   off_t file_ofs;
   bool success = false;
   int i;
+  
+  /* In this section of code we calculate the maximum value of argc.
+     This allows us to properly allocate memory on the stack later
+     in which we will put the arguments and argv. */
 
   size_t filenameLen = strlen(file_name);
-  int argc_max = 2;
+  size_t argc_max = 2;
 
-  for(int i = 0; i < filenameLen; i++) {
+  for(size_t i = 0; i < filenameLen; i++) {
     if(file_name[i] == ' ') argc_max++;
   }
 
-  size_t argv_size = argc_max * 4 + strlen(file_name) + 1;
-  char argvMem[argv_size];
-  char** argv = (char**) argvMem;
+  size_t argv_size = argc_max * 4 + strlen(file_name) + 1; // size of argv buffer
+  char argvMem[argv_size]; // allocating space on stack for argv buffer
+  char** argv = (char**) argvMem; // recast the stack pointer to char** for 
+                                  // actually writting the pointers to the arguments
 
-  size_t argvOffset = 0;
+  char* argvBaseMemPtr = argvMem + argc_max * 4; // Pointer to memory location where next argument should go
+  char* argvBaseStackPtr = ((char*)PHYS_BASE) - argv_size + argc_max * 4; // Pointer to memory location where 
+                                                                          // arguments are located after they 
+                                                                          // will be placed on the user's stack
 
-  char* argvBaseMemPtr = argvMem + argc_max * 4;
-  char* argvBaseStackPtr = ((char*)PHYS_BASE) - argv_size + argc_max * 4;
-
+  /* This section of code actually parses file_name and 
+     sets up the argv buffer with all the argument data. */
   char* token;
-  char* rest = file_name;
+  char* rest = (char*) file_name;
   int argc = 0;
   while ((token = strtok_r(rest, " ", &rest))) {
     size_t tokenSize = strlen(token)+1;
@@ -395,7 +405,9 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
   }
 
   /* Set up stack. */
-  if (!setup_stack(esp, argc, argv, argv_size))
+  // pass argc and argv data to setup_stack where they 
+  // will be copied over to the user's stack memory
+  if (!setup_stack(esp, argc, argv, argv_size)) 
     goto done;
 
   /* Start address. */
@@ -520,24 +532,28 @@ static bool setup_stack(void** esp, int argc, char** argv, size_t argvSize) {
   if (kpage != NULL) {
     success = install_page(((uint8_t*)PHYS_BASE) - PGSIZE, kpage, true);
     if (success) {
-      char* argv_mem_block = ((char*)PHYS_BASE) - argvSize;
-      memcpy(argv_mem_block, (void*)argv, argvSize);
+      // We copy the argv buffer to the top of the user's stack
+      char* new_esp = ((char*)PHYS_BASE) - argvSize; 
+      memcpy(new_esp, (void*)argv, argvSize);
 
-      char* new_esp = argv_mem_block;
-
-      size_t padding = ((uint32_t)new_esp - 8) % 16;
+      // calculate padding to ensure stack is 16 byte aligned
+      size_t padding = ((uint32_t)new_esp - 8) % 16; 
 
       new_esp -= padding;
 
+      // place a pointer to the start of the argv buffer, this will be our char** argv
       new_esp -= 4;
-      *((char**)new_esp) = (char**)(argv_mem_block);
+      *((char**)new_esp) = (new_esp + padding + 4);
 
+      // place the argc value
       new_esp -= 4;
       *((int*)new_esp) = argc;
 
+      //place dummy return address
       new_esp -= 4;
       *((void**)new_esp) = NULL;
       
+      //set the user stack to point to our setup stack
       *esp = (void*)new_esp;
     } else {
       palloc_free_page(kpage);
