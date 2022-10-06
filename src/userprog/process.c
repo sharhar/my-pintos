@@ -149,6 +149,8 @@ static void start_process(void* _startInfo) {
     new_pcb->pagedir = NULL;
     t->pcb = new_pcb;
 
+    t->pcb->parental_control_block = startInfo->newProc;
+
     // Continue initializing the PCB as normal
     t->pcb->main_thread = t;
     strlcpy(t->pcb->process_name, t->name, sizeof t->name);
@@ -173,7 +175,6 @@ static void start_process(void* _startInfo) {
     free(pcb_to_free);
   }
 
-  t->pcb->parental_control_block = startInfo->newProc;
   struct semaphore* start_sema = startInfo->sema;
   bool* exec_success = startInfo->exec_success;
 
@@ -320,6 +321,7 @@ void process_exit(void) {
 
   thread_exit();
 }
+
 
 /* Sets up the CPU for running user code in the current
    thread. This function is called on every context switch. */
