@@ -137,6 +137,8 @@ static void start_process(void* file_name_) {
 
   // TODO: set sucess && pcb_sucess to some value stored on the caller's stack so it can be passed back to the caller of exec
 
+  // TODO: call finit and fsave to fpuState in intr_frame
+
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
      threads/intr-stubs.S).  Because intr_exit takes all of its
