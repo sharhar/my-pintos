@@ -20,11 +20,24 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 
-static struct semaphore temporary;
 static thread_func start_process NO_RETURN;
 static thread_func start_pthread NO_RETURN;
 static bool load(const char* file_name, void (**eip)(void), void** esp);
 bool setup_thread(void (**eip)(void), void** esp);
+
+static struct lock __nextPidLock;
+static pid_t __nextPid = 1;
+
+static pid_t __getNextPid() {
+  lock_acquire(&__nextPidLock);
+
+  pid_t return_val = __nextPid;
+  __nextPid++;
+
+  lock_release(&__nextPidLock);
+
+  return return_val;
+}
 
 /* Initializes user programs in the system by ensuring the main
    thread has a minimal PCB so that it can execute and wait for
@@ -42,27 +55,48 @@ void userprog_init(void) {
   t->pcb = calloc(sizeof(struct process), 1);
   success = t->pcb != NULL;
 
+  list_init(&t->pcb->children);
+  list_init(&t->pcb->files);
+
+  lock_init(&__nextPidLock);
+
   /* Kill the kernel if we did not succeed */
   ASSERT(success);
 }
+
+struct process_start_info {
+  struct child_process* newProc;
+  struct semaphore* sema;
+  bool* exec_success;
+  char* filename;
+};
 
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
    before process_execute() returns.  Returns the new process's
    process id, or TID_ERROR if the thread cannot be created. */
 pid_t process_execute(const char* file_name) {
-  char* fn_copy;
+  struct process_start_info* fn_copy;
   tid_t tid;
 
-  // TODO: add some synchronized bool for reading sucess value from process after load
+  struct child_process* newProc = malloc(sizeof(struct child_process));
+  struct semaphore sema;
+  bool exec_success = false;
 
-  sema_init(&temporary, 0);
+  sema_init(&sema, 0);
+
   /* Make a copy of FILE_NAME.
      Otherwise there's a race between the caller and load(). */
   fn_copy = palloc_get_page(0);
   if (fn_copy == NULL)
     return TID_ERROR;
-  strlcpy(fn_copy, file_name, PGSIZE);
+  
+  fn_copy->newProc = newProc;
+  fn_copy->sema = &sema;
+  fn_copy->exec_success = &exec_success;
+  fn_copy->filename = ((char*)fn_copy) + sizeof(struct process_start_info);
+  
+  strlcpy(fn_copy->filename, file_name, PGSIZE - sizeof(struct process_start_info));
 
   /* since the file_name variable contains both the filename
      and the arguments, we have to parse out just the filename
@@ -82,13 +116,24 @@ pid_t process_execute(const char* file_name) {
   tid = thread_create(real_file_name, PRI_DEFAULT, start_process, fn_copy);
   if (tid == TID_ERROR)
     palloc_free_page(fn_copy);
-  return tid;
+  
+  sema_down(&sema);
+
+  if(!exec_success) {
+    free(newProc);
+    return -1;
+  }
+
+  list_push_front(&thread_current()->pcb->children, &newProc->elem);
+
+  return newProc->pid;
 }
 
 /* A thread function that loads a user process and starts it
    running. */
-static void start_process(void* file_name_) {
-  char* file_name = (char*)file_name_;
+static void start_process(void* _startInfo) {
+  struct process_start_info* startInfo = (struct process_start_info*) _startInfo;
+  char* file_name = (char*) startInfo->filename;
   struct thread* t = thread_current();
   struct intr_frame if_;
   bool success, pcb_success;
@@ -128,14 +173,30 @@ static void start_process(void* file_name_) {
     free(pcb_to_free);
   }
 
+  t->pcb->parental_control_block = startInfo->newProc;
+  struct semaphore* start_sema = startInfo->sema;
+  bool* exec_success = startInfo->exec_success;
+
   /* Clean up. Exit on failure or jump to userspace */
-  palloc_free_page(file_name);
+  palloc_free_page(_startInfo);
   if (!success) {
-    sema_up(&temporary);
+    sema_up(start_sema);
     thread_exit();
   }
 
-  // TODO: set sucess && pcb_sucess to some value stored on the caller's stack so it can be passed back to the caller of exec
+  t->pcb->parental_control_block->reference_count = 2;
+  t->pcb->parental_control_block->exit_code = -1;
+  t->pcb->parental_control_block->pid = __getNextPid();
+  
+  lock_init(&t->pcb->parental_control_block->reference_lock);
+  sema_init(&t->pcb->parental_control_block->sem, 0);
+
+  list_init(&t->pcb->children);
+  list_init(&t->pcb->files);
+
+  *exec_success = true;
+
+  sema_up(start_sema);
 
   // TODO: call finit and fsave to fpuState in intr_frame
 
@@ -158,9 +219,24 @@ static void start_process(void* file_name_) {
 
    This function will be implemented in problem 2-2.  For now, it
    does nothing. */
-int process_wait(pid_t child_pid UNUSED) {
-  sema_down(&temporary);
-  return 0;
+int process_wait(pid_t child_pid) {
+  struct list* children = &thread_current()->pcb->children;
+
+  struct list_elem* e;
+
+  for(e = list_begin(children); e != list_end(children); e = list_next(e)) {
+    struct child_process* cp = list_entry(e, struct child_process, elem);
+
+    if(cp->pid == child_pid) {
+      sema_down(&cp->sem);
+
+      list_remove(&cp->elem);
+
+      return cp->exit_code;
+    }
+  }
+  
+  return -1;
 }
 
 /* Free the current process's resources. */
@@ -190,6 +266,50 @@ void process_exit(void) {
     pagedir_destroy(pd);
   }
 
+  struct list_elem* e;
+
+  for(e = list_begin(&cur->pcb->children); e != list_end(&cur->pcb->children); e = list_next(e)) {
+    struct child_process* cp = list_entry(e, struct child_process, elem);
+
+    bool to_be_deleted = false;
+
+    lock_acquire(&cp->reference_lock);
+
+    cp->reference_count--;
+
+    if(cp->reference_count == 0) {
+      to_be_deleted = true;
+    }
+
+    lock_release(&cp->reference_lock);
+
+    if(to_be_deleted) {
+      free(cp);
+    }
+  }
+
+  if(cur->pcb->parental_control_block != NULL) {
+    struct child_process* child_proc = cur->pcb->parental_control_block;
+
+    bool to_be_deleted = false;
+
+    lock_acquire(&child_proc->reference_lock);
+
+    child_proc->reference_count--;
+
+    if(child_proc->reference_count == 0) {
+      to_be_deleted = true;
+    }
+
+    lock_release(&child_proc->reference_lock);
+
+    sema_up(&child_proc->sem);
+
+    if(to_be_deleted) {
+      free(child_proc);
+    }
+  }
+
   /* Free the PCB of this process and kill this thread
      Avoid race where PCB is freed before t->pcb is set to NULL
      If this happens, then an unfortuantely timed timer interrupt
@@ -198,7 +318,6 @@ void process_exit(void) {
   cur->pcb = NULL;
   free(pcb_to_free);
 
-  sema_up(&temporary);
   thread_exit();
 }
 
