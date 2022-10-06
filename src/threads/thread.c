@@ -206,10 +206,8 @@ tid_t thread_create(const char* name, int priority, thread_func* function, void*
   sf->eip = switch_entry;
   sf->ebp = 0;
 
-  // use fsave to temporary buffer
-  // call finit
-  // cal fsave on fpuState variable in switch_threads_frame
-  // call frstor on temporary buffer
+  char fpuCache[108];
+  asm volatile("fsave (%0); fninit; fsave (%1); frstor (%2)" : : "g"(&fpuCache), "g"(&sf->fpuState), "g"(&fpuCache));
 
   /* Add to run queue. */
   thread_unblock(t);

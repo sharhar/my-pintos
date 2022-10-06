@@ -8,6 +8,7 @@
 #include <threads/vaddr.h>
 #include <devices/shutdown.h>
 #include <lib/string.h>
+#include <lib/float.h>
 
 #define SYSCALL_ENTRY(NUM, FUNC, ARGNUM) case NUM: check_user_pointer((char*)args, (ARGNUM + 1) * 4); FUNC(args, &f->eax); break;
 
@@ -68,6 +69,10 @@ static void syscall_wait(uint32_t* args, uint32_t* f_eax) {
   *f_eax = process_wait(args[1]);
 }
 
+static void syscall_compute_e(uint32_t* args, uint32_t* f_eax) {
+  *f_eax = sys_sum_to_e(args[1]);
+}
+
 void syscall_init(void) { intr_register_int(0x30, 3, INTR_ON, syscall_handler, "syscall"); }
 
 static void syscall_handler(struct intr_frame* f) {
@@ -82,5 +87,6 @@ static void syscall_handler(struct intr_frame* f) {
     SYSCALL_ENTRY(SYS_HALT, syscall_halt, 0)
     SYSCALL_ENTRY(SYS_EXEC, syscall_exec, 1)
     SYSCALL_ENTRY(SYS_WAIT, syscall_wait, 1)
+    SYSCALL_ENTRY(SYS_COMPUTE_E, syscall_compute_e, 1)
   }
 }

@@ -9,7 +9,7 @@ struct switch_threads_frame {
   uint32_t ebp;        /*  8: Saved %ebp. */
   uint32_t ebx;        /* 12: Saved %ebx. */
 
-  // Add fpuState variable with size 108 bytes for storing fpu state during thread switches
+  uint8_t fpuState[108];
 
   void (*eip)(void);   /* 16: Return address. */
   struct thread* cur;  /* 20: switch_threads()'s CUR argument. */
@@ -34,7 +34,7 @@ void switch_thunk(void);
 #endif
 
 /* Offsets used by switch.S. */
-#define SWITCH_CUR 20 // set to 128 = 20 + 108 (FPU state size) when adding fpuState
-#define SWITCH_NEXT 24 // set to 132 = 24 + 108 (FPU state size) when adding fpuState
+#define SWITCH_CUR 128 // set to 128 = 20 + 108 (FPU state size) when adding fpuState
+#define SWITCH_NEXT 132 // set to 132 = 24 + 108 (FPU state size) when adding fpuState
 
 #endif /* threads/switch.h */

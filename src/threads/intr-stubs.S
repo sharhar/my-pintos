@@ -19,8 +19,8 @@
 intr_entry:
 	/* Save caller's registers. */
    
-#  subtract 108 bytes from esp to make room for fpu state
-#  call fsave on esp
+   subl $108, %esp
+   fsave (%esp)
 
 	pushl %ds
 	pushl %es
@@ -33,7 +33,7 @@ intr_entry:
 	mov $SEL_KDSEG, %eax	/* Initialize segment registers. */
 	mov %eax, %ds
 	mov %eax, %es
-	leal 56(%esp), %ebp	/* Set up frame pointer. NOTE: make sure to increase offset to 164 (56 + 108) after adding fpu context switching */
+	leal 164(%esp), %ebp
 
 	/* Call interrupt handler. */
 	pushl %esp
@@ -60,8 +60,8 @@ intr_exit:
 	popl %es
 	popl %ds
 
-#   call frstor on esp
-#   add 108 bytes to esp
+   frstor (%esp)
+   addl $108, %esp
 
         /* Discard `struct intr_frame' vec_no, error_code,
            frame_pointer members. */

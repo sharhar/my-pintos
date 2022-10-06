@@ -24,8 +24,8 @@ switch_threads:
 	# This stack frame must match the one set up by thread_create()
 	# in size.
 
-#  subtract 108 bytes from esp to make room for fpu state
-#  call fsave on esp
+	subl $108, %esp
+	fsave (%esp)
 
 	pushl %ebx
 	pushl %ebp
@@ -50,8 +50,9 @@ switch_threads:
 	popl %ebp
 	popl %ebx
 
-#   call frstor on esp
-#   add 108 bytes to esp
+	frstor (%esp)
+	addl $108, %esp
+
         ret
 .endfunc
 

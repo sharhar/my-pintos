@@ -199,7 +199,8 @@ static void start_process(void* _startInfo) {
 
   sema_up(start_sema);
 
-  // TODO: call finit and fsave to fpuState in intr_frame
+  char fpuCache[108];
+  asm volatile("fsave (%0); fninit; fsave (%1); frstor (%2)" : : "g"(&fpuCache), "g"(&if_.fpuState), "g"(&fpuCache));
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
