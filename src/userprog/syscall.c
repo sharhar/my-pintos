@@ -76,6 +76,8 @@ static void syscall_compute_e(uint32_t* args, uint32_t* f_eax) {
 void syscall_init(void) { intr_register_int(0x30, 3, INTR_ON, syscall_handler, "syscall"); }
 
 static void syscall_handler(struct intr_frame* f) {
+  thread_current()->in_syscall = true;
+
   uint32_t* args = ((uint32_t*)f->esp);
 
   check_user_pointer((char*)args, 4);
@@ -89,4 +91,6 @@ static void syscall_handler(struct intr_frame* f) {
     SYSCALL_ENTRY(SYS_WAIT, syscall_wait, 1)
     SYSCALL_ENTRY(SYS_COMPUTE_E, syscall_compute_e, 1)
   }
+
+  thread_current()->in_syscall = false;
 }

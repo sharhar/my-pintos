@@ -138,10 +138,13 @@ static void page_fault(struct intr_frame* f) {
   write = (f->error_code & PF_W) != 0;
   user = (f->error_code & PF_U) != 0;
 
-  // if the page_fault occured in kernel mode at a userspace address, we 
-  // close the user process instead of shutting down the machine
-  if(!user && is_user_vaddr(fault_addr)) { 
-      printf("%s: exit(%d)\n", thread_current()->pcb->process_name, -1);
+  // if the page_fault occured in kernel mode at a userspace address
+  // while inside of a syscall, we close the user process instead
+  // of shutting down the machine
+  struct thread* curr_thread = thread_current();
+  if(!user && curr_thread->in_syscall && is_user_vaddr(fault_addr) && curr_thread->pcb != NULL) {
+      curr_thread->in_syscall = false;
+      printf("%s: exit(%d)\n", curr_thread->pcb->process_name, -1);
       process_exit();
       NOT_REACHED();
   }
@@ -152,5 +155,6 @@ static void page_fault(struct intr_frame* f) {
   printf("Page fault at %p: %s error %s page in %s context.\n", fault_addr,
          not_present ? "not present" : "rights violation", write ? "writing" : "reading",
          user ? "user" : "kernel");
+  
   kill(f);
 }

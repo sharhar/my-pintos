@@ -96,6 +96,7 @@ struct thread {
 #ifdef USERPROG
   /* Owned by process.c. */
   struct process* pcb; /* Process control block if this thread is a userprog */
+  bool in_syscall; // to be used in exception.c to determine if a page_fault is the cause of a bad user pointer
 #endif
 
   /* Owned by thread.c. */
