@@ -26,6 +26,12 @@ struct child_process {
   struct list_elem elem;
 };
 
+struct process_file {
+  int fd;
+  struct file* filePtr;
+  struct list_elem elem;
+};
+
 /* The process control block for a given process. Since
    there can be multiple threads per process, we need a separate
    PCB from the TCB. All TCBs in a process will have a pointer

@@ -12,7 +12,8 @@
 
 #define SYSCALL_ENTRY(NUM, FUNC, ARGNUM) case NUM: check_user_pointer((char*)args, (ARGNUM + 1) * 4); FUNC(args, &f->eax); break;
 
-static void syscall_handler(struct intr_frame*);
+static struct lock global_file_lock;
+static int current_file_count = 3;
 
 static void check_user_pointer(char* userPtr, size_t memSize) {
   /* We have a clause in exception.c to handle invalid pointer dereferencing of a
@@ -30,6 +31,21 @@ static void check_user_pointer(char* userPtr, size_t memSize) {
     process_exit();
     NOT_REACHED();
   }
+}
+
+static void check_user_string(char* user_str) {
+  /* We can just call strlen because if we ever reach an invalid page inside of strnlen 
+     it will just trigger a page_fault which will be handled properly inside of exception.c.
+     Therefore, if strnlen returns, then we know that all the characters inside the string 
+     are in pages which are valid. So to finish the pointer validation, we make sure that the
+     final byte in the string is actually inside of userspace memory before we return.*/
+  size_t user_str_size = strlen(user_str); /* We don't use strnlen here because, if the user provides
+                                              a string that is larger than the maxlen passed into strnlen,
+                                              the strnlen function would simply return that maxlen, which
+                                              when passed into the check_user_pointer function could return true
+                                              even though the actuall null terminator is in an invalid page or
+                                              in kernel space. */
+  check_user_pointer(user_str, user_str_size+1 /* we add one to make sure we check that the NULL terminator is in userspace */);
 }
 
 static void syscall_exit(uint32_t* args, uint32_t* f_eax) {
@@ -58,10 +74,7 @@ static void syscall_halt(uint32_t* args, uint32_t* f_eax) {
 
 static void syscall_exec(uint32_t* args, uint32_t* f_eax) {
   char* filename = (char*)args[1];
-  size_t filenameLen = strnlen(filename, PGSIZE);
-
-  check_user_pointer(filename, filenameLen);
-
+  check_user_string(filename);
   *f_eax = process_execute(filename);
 }
 
@@ -72,8 +85,6 @@ static void syscall_wait(uint32_t* args, uint32_t* f_eax) {
 static void syscall_compute_e(uint32_t* args, uint32_t* f_eax) {
   *f_eax = sys_sum_to_e(args[1]);
 }
-
-void syscall_init(void) { intr_register_int(0x30, 3, INTR_ON, syscall_handler, "syscall"); }
 
 static void syscall_handler(struct intr_frame* f) {
   thread_current()->in_syscall = true;
@@ -94,3 +105,5 @@ static void syscall_handler(struct intr_frame* f) {
 
   thread_current()->in_syscall = false;
 }
+
+void syscall_init(void) { intr_register_int(0x30, 3, INTR_ON, syscall_handler, "syscall"); }
