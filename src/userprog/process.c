@@ -25,16 +25,16 @@ static thread_func start_pthread NO_RETURN;
 static bool load(const char* file_name, void (**eip)(void), void** esp);
 bool setup_thread(void (**eip)(void), void** esp);
 
-static struct lock __nextPidLock;
-static pid_t __nextPid = 1;
+static struct lock nextPidLock;
+static pid_t nextPid = 1;
 
-static pid_t __getNextPid() {
-  lock_acquire(&__nextPidLock);
+static pid_t getNextPid() {
+  lock_acquire(&nextPidLock);
 
-  pid_t return_val = __nextPid;
-  __nextPid++;
+  pid_t return_val = nextPid;
+  nextPid++;
 
-  lock_release(&__nextPidLock);
+  lock_release(&nextPidLock);
 
   return return_val;
 }
@@ -58,7 +58,7 @@ void userprog_init(void) {
   list_init(&t->pcb->children);
   list_init(&t->pcb->files);
 
-  lock_init(&__nextPidLock);
+  lock_init(&nextPidLock);
 
   /* Kill the kernel if we did not succeed */
   ASSERT(success);
@@ -124,7 +124,7 @@ pid_t process_execute(const char* file_name) {
     return -1;
   }
 
-  list_push_front(&thread_current()->pcb->children, &newProc->elem);
+  list_push_back(&thread_current()->pcb->children, &newProc->elem);
 
   return newProc->pid;
 }
@@ -187,7 +187,7 @@ static void start_process(void* _startInfo) {
 
   t->pcb->parental_control_block->reference_count = 2;
   t->pcb->parental_control_block->exit_code = -1;
-  t->pcb->parental_control_block->pid = __getNextPid();
+  t->pcb->parental_control_block->pid = getNextPid();
   
   lock_init(&t->pcb->parental_control_block->reference_lock);
   sema_init(&t->pcb->parental_control_block->sem, 0);
@@ -233,7 +233,11 @@ int process_wait(pid_t child_pid) {
 
       list_remove(&cp->elem);
 
-      return cp->exit_code;
+      int return_code = cp->exit_code;
+
+      free(cp);
+
+      return return_code;
     }
   }
   
@@ -251,23 +255,12 @@ void process_exit(void) {
     NOT_REACHED();
   }
 
-  /* Destroy the current process's page directory and switch back
-     to the kernel-only page directory. */
-  pd = cur->pcb->pagedir;
-  if (pd != NULL) {
-    /* Correct ordering here is crucial.  We must set
-         cur->pcb->pagedir to NULL before switching page directories,
-         so that a timer interrupt can't switch back to the
-         process page directory.  We must activate the base page
-         directory before destroying the process's page
-         directory, or our active page directory will be one
-         that's been freed (and cleared). */
-    cur->pcb->pagedir = NULL;
-    pagedir_activate(NULL);
-    pagedir_destroy(pd);
-  }
-
   struct list_elem* e;
+
+  int list_len = list_size(&cur->pcb->children);
+
+  void* to_be_deleted_pointers[list_len];
+  int child_process_index = 0;
 
   for(e = list_begin(&cur->pcb->children); e != list_end(&cur->pcb->children); e = list_next(e)) {
     struct child_process* cp = list_entry(e, struct child_process, elem);
@@ -285,8 +278,18 @@ void process_exit(void) {
     lock_release(&cp->reference_lock);
 
     if(to_be_deleted) {
-      free(cp);
+      to_be_deleted_pointers[child_process_index] = cp;
+    } else {
+      to_be_deleted_pointers[child_process_index] = NULL;
     }
+
+    child_process_index++;
+  }
+
+  ASSERT(child_process_index == list_len);
+
+  for(int i = 0; i < list_len; i++) {
+    if(to_be_deleted_pointers[i] != NULL) free(to_be_deleted_pointers[i]);
   }
 
   if(cur->pcb->parental_control_block != NULL) {
@@ -309,6 +312,22 @@ void process_exit(void) {
     if(to_be_deleted) {
       free(child_proc);
     }
+  }
+
+  /* Destroy the current process's page directory and switch back
+     to the kernel-only page directory. */
+  pd = cur->pcb->pagedir;
+  if (pd != NULL) {
+    /* Correct ordering here is crucial.  We must set
+         cur->pcb->pagedir to NULL before switching page directories,
+         so that a timer interrupt can't switch back to the
+         process page directory.  We must activate the base page
+         directory before destroying the process's page
+         directory, or our active page directory will be one
+         that's been freed (and cleared). */
+    cur->pcb->pagedir = NULL;
+    pagedir_activate(NULL);
+    pagedir_destroy(pd);
   }
 
   /* Free the PCB of this process and kill this thread

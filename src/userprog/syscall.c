@@ -9,11 +9,19 @@
 #include <devices/shutdown.h>
 #include <lib/string.h>
 #include <lib/float.h>
+#include <filesys/filesys.h>
 
 #define SYSCALL_ENTRY(NUM, FUNC, ARGNUM) case NUM: check_user_pointer((char*)args, (ARGNUM + 1) * 4); FUNC(args, &f->eax); break;
 
 static struct lock global_file_lock;
 static int current_file_count = 3;
+
+static void bad_user_pointer() {
+  char* proc_name = thread_current()->pcb->process_name;
+  printf("%s: exit(%d)\n", proc_name, -1);
+  process_exit();
+  NOT_REACHED();
+}
 
 static void check_user_pointer(char* userPtr, size_t memSize) {
   /* We have a clause in exception.c to handle invalid pointer dereferencing of a
@@ -24,16 +32,12 @@ static void check_user_pointer(char* userPtr, size_t memSize) {
       to know is whether or not the buffer is fully within userspace, and the begining of 
       the buffer will always be below the end of it, we only need to check the end to ensure
       that the whole block of memory is within userspace. */
-
-  if(!is_user_vaddr(userPtr + memSize - 1)) { 
-    char* proc_name = thread_current()->pcb->process_name;
-    printf("%s: exit(%d)\n", proc_name, -1);
-    process_exit();
-    NOT_REACHED();
-  }
+  if(!is_user_vaddr(userPtr + memSize - 1)) bad_user_pointer();
 }
 
 static void check_user_string(char* user_str) {
+  if(user_str == NULL) bad_user_pointer(); 
+
   /* We can just call strlen because if we ever reach an invalid page inside of strnlen 
      it will just trigger a page_fault which will be handled properly inside of exception.c.
      Therefore, if strnlen returns, then we know that all the characters inside the string 
@@ -75,7 +79,10 @@ static void syscall_halt(uint32_t* args, uint32_t* f_eax) {
 static void syscall_exec(uint32_t* args, uint32_t* f_eax) {
   char* filename = (char*)args[1];
   check_user_string(filename);
+
+  lock_acquire(&global_file_lock);
   *f_eax = process_execute(filename);
+  lock_release(&global_file_lock);
 }
 
 static void syscall_wait(uint32_t* args, uint32_t* f_eax) {
@@ -84,6 +91,24 @@ static void syscall_wait(uint32_t* args, uint32_t* f_eax) {
 
 static void syscall_compute_e(uint32_t* args, uint32_t* f_eax) {
   *f_eax = sys_sum_to_e(args[1]);
+}
+
+static void syscall_create(uint32_t* args, uint32_t* f_eax) {
+  char* filename = args[1];
+  check_user_string(filename);
+
+  lock_acquire(&global_file_lock);
+  *f_eax = filesys_create(filename, (off_t) args[2]);
+  lock_release(&global_file_lock);
+}
+
+static void syscall_remove(uint32_t* args, uint32_t* f_eax) {
+  char* filename = args[1];
+  check_user_string(filename);
+
+  lock_acquire(&global_file_lock);
+  *f_eax = filesys_remove(filename);
+  lock_release(&global_file_lock);
 }
 
 static void syscall_handler(struct intr_frame* f) {
@@ -101,9 +126,14 @@ static void syscall_handler(struct intr_frame* f) {
     SYSCALL_ENTRY(SYS_EXEC, syscall_exec, 1)
     SYSCALL_ENTRY(SYS_WAIT, syscall_wait, 1)
     SYSCALL_ENTRY(SYS_COMPUTE_E, syscall_compute_e, 1)
+    SYSCALL_ENTRY(SYS_CREATE, syscall_create, 2)
+    SYSCALL_ENTRY(SYS_REMOVE, syscall_remove, 1)
   }
 
   thread_current()->in_syscall = false;
 }
 
-void syscall_init(void) { intr_register_int(0x30, 3, INTR_ON, syscall_handler, "syscall"); }
+void syscall_init(void) {
+  lock_init(&global_file_lock);
+  intr_register_int(0x30, 3, INTR_ON, syscall_handler, "syscall");
+}
