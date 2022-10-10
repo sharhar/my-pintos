@@ -10,10 +10,12 @@
 #include <lib/string.h>
 #include <lib/float.h>
 #include <filesys/filesys.h>
+#include <threads/malloc.h>
+#include <filesys/file.h>
 
 #define SYSCALL_ENTRY(NUM, FUNC, ARGNUM) case NUM: check_user_pointer((char*)args, (ARGNUM + 1) * 4); FUNC(args, &f->eax); break;
 
-static struct lock global_file_lock;
+struct lock global_file_lock;
 static int current_file_count = 3;
 
 static void bad_user_pointer() {
@@ -52,6 +54,20 @@ static void check_user_string(char* user_str) {
   check_user_pointer(user_str, user_str_size+1 /* we add one to make sure we check that the NULL terminator is in userspace */);
 }
 
+static struct process_file* get_file_from_fd(struct list* files, int fd) {
+  struct list_elem* e;
+
+  for(e = list_begin(files); e != list_end(files); e = list_next(e)) {
+    struct process_file* pf = list_entry(e, struct process_file, elem);
+
+    if(pf->fd == fd) {
+      return pf;//pf->filePtr;
+    }
+  }
+
+  return NULL;
+}
+
 static void syscall_exit(uint32_t* args, uint32_t* f_eax) {
   struct process* curr_pcb = thread_current()->pcb;
   *f_eax = args[1];
@@ -71,7 +87,7 @@ static void syscall_practice(uint32_t* args, uint32_t* f_eax) {
   *f_eax = args[1] + 1;
 }
 
-static void syscall_halt(uint32_t* args, uint32_t* f_eax) {
+static void syscall_halt(UNUSED uint32_t* args, UNUSED uint32_t* f_eax) {
   shutdown_power_off();
   NOT_REACHED();
 }
@@ -94,7 +110,7 @@ static void syscall_compute_e(uint32_t* args, uint32_t* f_eax) {
 }
 
 static void syscall_create(uint32_t* args, uint32_t* f_eax) {
-  char* filename = args[1];
+  char* filename = (char*)args[1];
   check_user_string(filename);
 
   lock_acquire(&global_file_lock);
@@ -103,11 +119,56 @@ static void syscall_create(uint32_t* args, uint32_t* f_eax) {
 }
 
 static void syscall_remove(uint32_t* args, uint32_t* f_eax) {
-  char* filename = args[1];
+  char* filename = (char*)args[1];
   check_user_string(filename);
 
   lock_acquire(&global_file_lock);
   *f_eax = filesys_remove(filename);
+  lock_release(&global_file_lock);
+}
+
+static void syscall_open(uint32_t* args, uint32_t* f_eax) {
+  char* filename = (char*)args[1];
+  check_user_string(filename);
+
+  lock_acquire(&global_file_lock);
+
+  struct file* my_file = filesys_open(filename);
+
+  if(my_file == NULL) {
+    *f_eax = (uint32_t) ((int)-1);
+    lock_release(&global_file_lock);
+    return;
+  } 
+
+  struct process_file* proc_file = malloc(sizeof(struct process_file));
+  proc_file->fd = current_file_count;
+  proc_file->filePtr = my_file;
+
+  list_push_front(&thread_current()->pcb->files, &proc_file->elem);
+
+  current_file_count++;
+  *f_eax = proc_file->fd;
+  lock_release(&global_file_lock);
+}
+
+static void syscall_close(uint32_t* args, uint32_t* f_eax) {
+  lock_acquire(&global_file_lock);
+
+  struct process_file* proc_file = get_file_from_fd(&thread_current()->pcb->files, (int)args[1]);
+
+  if(proc_file == NULL) {
+    *f_eax = (uint32_t) ((int)-1);
+    lock_release(&global_file_lock);
+    return;
+  }
+
+  file_close(proc_file->filePtr);
+  list_remove(&proc_file->elem);
+
+  free(proc_file);
+
+  *f_eax = 0;
   lock_release(&global_file_lock);
 }
 
@@ -128,6 +189,8 @@ static void syscall_handler(struct intr_frame* f) {
     SYSCALL_ENTRY(SYS_COMPUTE_E, syscall_compute_e, 1)
     SYSCALL_ENTRY(SYS_CREATE, syscall_create, 2)
     SYSCALL_ENTRY(SYS_REMOVE, syscall_remove, 1)
+    SYSCALL_ENTRY(SYS_OPEN, syscall_open, 1)
+    SYSCALL_ENTRY(SYS_CLOSE, syscall_close, 1)
   }
 
   thread_current()->in_syscall = false;

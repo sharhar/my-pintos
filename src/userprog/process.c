@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "userprog/syscall.h"
 #include "userprog/gdt.h"
 #include "userprog/pagedir.h"
 #include "userprog/tss.h"
@@ -22,7 +23,7 @@
 
 static thread_func start_process NO_RETURN;
 static thread_func start_pthread NO_RETURN;
-static bool load(const char* file_name, void (**eip)(void), void** esp);
+static bool load(const char* file_name, void (**eip)(void), void** esp, struct file** filePtr);
 bool setup_thread(void (**eip)(void), void** esp);
 
 static struct lock nextPidLock;
@@ -137,6 +138,7 @@ static void start_process(void* _startInfo) {
   struct thread* t = thread_current();
   struct intr_frame if_;
   bool success, pcb_success;
+  struct file* proc_file_handle;
 
   /* Allocate process control block */
   struct process* new_pcb = malloc(sizeof(struct process));
@@ -154,15 +156,13 @@ static void start_process(void* _startInfo) {
     // Continue initializing the PCB as normal
     t->pcb->main_thread = t;
     strlcpy(t->pcb->process_name, t->name, sizeof t->name);
-  }
 
-  /* Initialize interrupt frame and load executable. */
-  if (success) {
+
     memset(&if_, 0, sizeof if_);
     if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
     if_.cs = SEL_UCSEG;
     if_.eflags = FLAG_IF | FLAG_MBS;
-    success = load(file_name, &if_.eip, &if_.esp);
+    success = load(file_name, &if_.eip, &if_.esp, &proc_file_handle);
   }
 
   /* Handle failure with succesful PCB malloc. Must free the PCB */
@@ -194,6 +194,11 @@ static void start_process(void* _startInfo) {
 
   list_init(&t->pcb->children);
   list_init(&t->pcb->files);
+
+  struct process_file* proc_file = malloc(sizeof(struct process_file));
+  proc_file->fd = 2;
+  proc_file->filePtr = proc_file_handle;
+  list_push_front(&t->pcb->files, &proc_file->elem);
 
   *exec_success = true;
 
@@ -244,25 +249,15 @@ int process_wait(pid_t child_pid) {
   return -1;
 }
 
-/* Free the current process's resources. */
-void process_exit(void) {
-  struct thread* cur = thread_current();
-  uint32_t* pd;
-
-  /* If this thread does not have a PCB, don't worry */
-  if (cur->pcb == NULL) {
-    thread_exit();
-    NOT_REACHED();
-  }
-
+static void free_process_children(struct process* pcb) {
   struct list_elem* e;
 
-  int list_len = list_size(&cur->pcb->children);
+  int list_len = list_size(&pcb->children);
 
   void* to_be_deleted_pointers[list_len];
   int child_process_index = 0;
 
-  for(e = list_begin(&cur->pcb->children); e != list_end(&cur->pcb->children); e = list_next(e)) {
+  for(e = list_begin(&pcb->children); e != list_end(&pcb->children); e = list_next(e)) {
     struct child_process* cp = list_entry(e, struct child_process, elem);
 
     bool to_be_deleted = false;
@@ -292,8 +287,8 @@ void process_exit(void) {
     if(to_be_deleted_pointers[i] != NULL) free(to_be_deleted_pointers[i]);
   }
 
-  if(cur->pcb->parental_control_block != NULL) {
-    struct child_process* child_proc = cur->pcb->parental_control_block;
+  if(pcb->parental_control_block != NULL) {
+    struct child_process* child_proc = pcb->parental_control_block;
 
     bool to_be_deleted = false;
 
@@ -313,6 +308,50 @@ void process_exit(void) {
       free(child_proc);
     }
   }
+}
+
+static void free_process_files(struct process* pcb) {
+  struct list_elem* e;
+
+  int list_len = list_size(&pcb->files);
+
+  void* to_be_deleted_pointers[list_len];
+  int child_process_index = 0;
+
+  if(!lock_held_by_current_thread(&global_file_lock))
+    lock_acquire(&global_file_lock);
+
+  for(e = list_begin(&pcb->files); e != list_end(&pcb->files); e = list_next(e)) {
+    struct process_file* pf = list_entry(e, struct process_file, elem);
+
+    file_close(pf->filePtr);
+    
+    to_be_deleted_pointers[child_process_index] = pf;
+    child_process_index++;
+  }
+
+  lock_release(&global_file_lock);
+
+  ASSERT(child_process_index == list_len);
+
+  for(int i = 0; i < list_len; i++) {
+    free(to_be_deleted_pointers[i]);
+  }
+}
+
+/* Free the current process's resources. */
+void process_exit(void) {
+  struct thread* cur = thread_current();
+  uint32_t* pd;
+
+  /* If this thread does not have a PCB, don't worry */
+  if (cur->pcb == NULL) {
+    thread_exit();
+    NOT_REACHED();
+  }
+
+  free_process_children(cur->pcb);
+  free_process_files(cur->pcb);
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -428,7 +467,7 @@ static bool load_segment(struct file* file, off_t ofs, uint8_t* upage, uint32_t 
    Stores the executable's entry point into *EIP
    and its initial stack pointer into *ESP.
    Returns true if successful, false otherwise. */
-bool load(const char* file_name, void (**eip)(void), void** esp) {
+bool load(const char* file_name, void (**eip)(void), void** esp, struct file** filePtr) {
   struct thread* t = thread_current();
   struct Elf32_Ehdr ehdr;
   struct file* file = NULL;
@@ -487,6 +526,8 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
     printf("load: %s: open failed\n", file_name);
     goto done;
   }
+
+  file_deny_write(file);
 
   /* Read and verify executable header. */
   if (file_read(file, &ehdr, sizeof ehdr) != sizeof ehdr ||
@@ -559,7 +600,10 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
 
 done:
   /* We arrive here whether the load is successful or not. */
-  file_close(file);
+  
+  *filePtr = file;
+  
+  //file_close(file);
   return success;
 }
 
