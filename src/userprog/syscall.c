@@ -12,6 +12,7 @@
 #include <filesys/filesys.h>
 #include <threads/malloc.h>
 #include <filesys/file.h>
+#include <devices/input.h>
 
 #define SYSCALL_ENTRY(NUM, FUNC, ARGNUM) case NUM: check_user_pointer((char*)args, (ARGNUM + 1) * 4); FUNC(args, &f->eax); break;
 
@@ -219,8 +220,14 @@ static void syscall_read(uint32_t* args, uint32_t* f_eax) {
 
   check_user_pointer(user_buffer, user_buffer_size);
 
-  if(fd == 0) { // 0 = STDIN_FILENO
-    // TODO: handle stdin reading
+  if(fd == 0) {
+    uint8_t* userReadBuff = (uint8_t*)user_buffer;
+
+    for(size_t i = 0; i < user_buffer_size; i++) {
+      userReadBuff[i] = input_getc();
+    }
+
+    *f_eax = user_buffer_size;
   } else {
     lock_acquire(&global_file_lock);
 
@@ -247,6 +254,7 @@ static void syscall_write(uint32_t* args, UNUSED uint32_t* f_eax) {
 
   if(args[1] == 1) {
     putbuf(user_buffer, user_buffer_size);
+    *f_eax = user_buffer_size;
   } else {
     lock_acquire(&global_file_lock);
 
