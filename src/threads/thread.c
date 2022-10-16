@@ -146,6 +146,8 @@ void thread_tick(void) {
 #endif
   else
     kernel_ticks++;
+  
+  // Decrement counter of all sleeping threads and enque threads that have finished sleeping
 
   /* Enforce preemption. */
   if (++thread_ticks >= TIME_SLICE)
