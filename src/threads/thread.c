@@ -175,7 +175,7 @@ void thread_print_stats(void) {
    The code provided sets the new thread's `priority' member to
    PRIORITY, but no actual priority scheduling is implemented.
    Priority scheduling is the goal of Problem 1-3. */
-tid_t thread_create(const char* name, int priority, thread_func* function, void* aux) {
+struct thread* thread_create(const char* name, int priority, thread_func* function, void* aux) {
   struct thread* t;
   struct kernel_thread_frame* kf;
   struct switch_entry_frame* ef;
@@ -186,8 +186,7 @@ tid_t thread_create(const char* name, int priority, thread_func* function, void*
 
   /* Allocate thread. */
   t = palloc_get_page(PAL_ZERO);
-  if (t == NULL)
-    return TID_ERROR;
+  if (t == NULL) return NULL;
 
   /* Initialize thread. */
   init_thread(t, name, priority);
@@ -216,7 +215,7 @@ tid_t thread_create(const char* name, int priority, thread_func* function, void*
   /* Add to run queue. */
   thread_unblock(t);
 
-  return tid;
+  return t;
 }
 
 /* Puts the current thread to sleep.  It will not be scheduled
@@ -535,14 +534,68 @@ void thread_switch_tail(struct thread* prev) {
   }
 }
 
+void thread_stack_frame_push(struct thread* t, void* func_ptr) {
+  ASSERT(intr_get_level() == INTR_OFF);
+  ASSERT(thread_current() != t);
+
+  // The thread's stack points directly to a switch_threads_frame struct
+  struct switch_threads_frame* frame = t->stack;
+
+  /* The size of the stack frame (including the stack frame of the
+      `schedule` function is the EBP - ESP of the thread. */
+  size_t stackFrameSize = frame->ebp - ((uint32_t)t->stack);
+
+  // Store copy of stack frame on local stack
+  uint8_t tempStack[stackFrameSize];
+  memcpy(tempStack, t->stack, stackFrameSize);
+
+  // Create custom struct to represent new stack frame
+  struct __new_stack_frame {
+    void* sfp;
+    void* helper;
+    void* rip;
+  };
+
+  // Move the stack frame down by the size of the new frame
+  uint8_t* prevStack = t->stack;
+  t->stack -= sizeof(struct __new_stack_frame);
+  memcpy(t->stack, prevStack, stackFrameSize);
+
+  // The stack frame has now been shifted
+  frame = t->stack;
+
+  // The new stack frame is now right above the old one
+  struct __new_stack_frame* new_frame = t->stack + stackFrameSize;
+  
+  // The sfp of the new thread should be the saved EBP address
+  new_frame->sfp = frame->ebp;
+
+  /* Here, we set the RIP address to point to the `stack_frame_push_helper`
+      function, which will modify the stack to emulate the state of the stack
+      when a function has just be called (instead of returned to), then it calls
+      the provided function. */
+      
+  new_frame->helper = stack_frame_push_helper;
+  new_frame->rip = func_ptr;
+
+  // Set the old EBP to point to the new frame
+  frame->ebp = new_frame;
+}
+
 /* Schedules a new thread.  At entry, interrupts must be off and
    the running process's state must have been changed from
    running to some other state.  This function finds another
    thread to run and switches to it.
 
    It's not safe to call printf() until thread_switch_tail()
-   has completed. */
-static void schedule(void) {
+   has completed. 
+   
+   NOTE: We need to force GCC not to inline the schedule function 
+   because if it does then the `thread_stack_frame_push` function
+   will add `func` to the return address of the parent function
+   and not the `schedule` function as desired.
+*/
+static void __attribute__ ((noinline)) schedule(void) {
   struct thread* cur = running_thread();
   struct thread* next = next_thread_to_run();
   struct thread* prev = NULL;

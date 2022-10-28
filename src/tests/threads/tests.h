@@ -52,5 +52,6 @@ extern test_func test_smfs_hierarchy_16;
 extern test_func test_smfs_hierarchy_32;
 extern test_func test_smfs_hierarchy_64;
 extern test_func test_smfs_hierarchy_256;
+extern test_func test_stack_frame_push;
 
 #endif /* tests/threads/tests.h */

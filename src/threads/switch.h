@@ -26,6 +26,8 @@ struct switch_entry_frame {
   void (*eip)(void);
 };
 
+void stack_frame_push_helper(void);
+
 void switch_entry(void);
 
 /* Pops the CUR and NEXT arguments off the stack, for use in

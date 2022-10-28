@@ -52,8 +52,16 @@ switch_threads:
 
 	frstor (%esp)
 	addl $108, %esp
+	
+	ret
+.endfunc
 
-        ret
+.globl stack_frame_push_helper
+.func stack_frame_push_helper
+stack_frame_push_helper:
+	pop %eax
+	pop %ebp
+	jmp %eax
 .endfunc
 
 .globl switch_entry

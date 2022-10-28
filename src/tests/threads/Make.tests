@@ -13,6 +13,7 @@ smfs-starve-0 smfs-starve-1 smfs-starve-2 smfs-starve-4 \
 smfs-starve-8 smfs-starve-16 smfs-starve-64 smfs-starve-256 \
 smfs-prio-change \
 smfs-hierarchy-16 smfs-hierarchy-32 smfs-hierarchy-64 \
+stack-frame-push-simple \
 )
 
 # Remove MLFQS tests for SU21
@@ -50,6 +51,7 @@ tests/threads_SRC += tests/threads/mlfqs-block.c
 tests/threads_SRC += tests/threads/smfs-starve.c
 tests/threads_SRC += tests/threads/smfs-prio-change.c
 tests/threads_SRC += tests/threads/smfs-hierarchy.c
+tests/threads_SRC += tests/threads/stack-frame-push-simple.c
 
 MLFQS_OUTPUTS = 				\
 tests/threads/mlfqs-load-1.output		\
@@ -64,10 +66,14 @@ tests/threads/mlfqs-block.output
 
 ALARM_TESTS       = $(filter tests/threads/alarm-%,$(tests/threads_TESTS))
                     # tests/threads/alarm-priority is included but overriden by SCHED_PRIO_TESTS
+
+STACK_FRAME_PUSH_TESTS = $(filter tests/threads/stack-frame-push-%,$(tests/threads_TESTS))
+
 SCHED_PRIO_TESTS  = $(filter tests/threads/priority-%,$(tests/threads_TESTS)) \
                     $(filter tests/threads/mt-matmul%,$(tests/threads_TESTS)) \
                     tests/threads/st-matmul \
                     tests/threads/alarm-priority
+
 SCHED_FAIR_TESTS  = $(filter tests/threads/smfs-%,$(tests/threads_TESTS))
 SCHED_MLFQS_TESTS = $(filter tests/threads/mlfqs-%,$(tests/threads_TESTS))
 
@@ -75,6 +81,10 @@ SCHED_MLFQS_TESTS = $(filter tests/threads/mlfqs-%,$(tests/threads_TESTS))
 # ALARM_TESTS must be first
 $(foreach TEST,$(ALARM_TESTS), \
           $(eval $(TEST)_KERNELARGS = -sched=fifo))
+
+$(foreach TEST,$(STACK_FRAME_PUSH_TESTS), \
+          $(eval $(TEST)_KERNELARGS = -sched=fifo))
+
 $(foreach TEST,$(SCHED_PRIO_TESTS), \
           $(eval $(TEST)_KERNELARGS = -sched=prio))
 $(foreach TEST,$(SCHED_FAIR_TESTS), \
