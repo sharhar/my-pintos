@@ -384,6 +384,12 @@ static void syscall_handler(struct intr_frame* f) {
     SYSCALL_ENTRY(SYS_TELL, syscall_tell, 1)
     SYSCALL_ENTRY(SYS_SEEK, syscall_seek, 2)
     SYSCALL_ENTRY(SYS_READ, syscall_read, 3)
+    SYSCALL_ENTRY(SYS_LOCK_INIT, syscall_lock_init, 1)
+    SYSCALL_ENTRY(SYS_LOCK_ACQUIRE, syscall_lock_acquire, 1)
+    SYSCALL_ENTRY(SYS_LOCK_RELEASE, syscall_lock_release, 1)
+    SYSCALL_ENTRY(SYS_SEMA_INIT, syscall_sema_init, 1)
+    SYSCALL_ENTRY(SYS_SEMA_UP, syscall_sema_up, 1)
+    SYSCALL_ENTRY(SYS_SEMA_DOWN, syscall_sema_down, 1)
   }
 
   thread_current()->in_syscall = false;
