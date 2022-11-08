@@ -32,6 +32,36 @@ struct process_file {
   struct list_elem elem;
 };
 
+
+struct user_thread {
+  tid_t tid;
+  void* user_stack;
+  struct lock lock;
+  struct list_elem elem;
+};
+
+struct user_lock {
+  lock_t id;
+  struct lock lock;
+  struct list_elem elem;
+};
+
+struct user_semaphore {
+  sema_t id;
+  struct semaphore sema;
+  struct list_elem elem;
+};
+
+struct user_thread_init_info {
+  struct process* pcb;
+  stub_fun sfun;
+  pthread_fun tfun;
+  const void* arg;
+  bool success;
+  void* user_stack;
+  struct semaphore sema;
+};
+
 /* The process control block for a given process. Since
    there can be multiple threads per process, we need a separate
    PCB from the TCB. All TCBs in a process will have a pointer
@@ -47,6 +77,21 @@ struct process {
   struct list children;
 
   struct list files;
+
+
+  struct lock children_lock;
+
+  struct list user_threads;
+  struct list user_locks;
+  struct list user_semaphores;
+
+  lock_t next_lock_ID = 0;
+  sema_t next_sema_ID = 0;
+
+  struct lock threads_lock;
+  struct lock locks_lock;
+  struct lock sempahores_lock;
+
 };
 
 void userprog_init(void);

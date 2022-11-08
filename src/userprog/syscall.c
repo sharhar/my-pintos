@@ -13,6 +13,7 @@
 #include <threads/malloc.h>
 #include <filesys/file.h>
 #include <devices/input.h>
+#include "userprog/process.h"
 
 #define SYSCALL_ENTRY(NUM, FUNC, ARGNUM) case NUM: check_user_pointer((char*)args, (ARGNUM + 1) * 4); FUNC(args, &f->eax); break;
 
@@ -270,6 +271,94 @@ static void syscall_write(uint32_t* args, UNUSED uint32_t* f_eax) {
 
     lock_release(&global_file_lock);
   }
+}
+
+static void syscall_lock_init(uint32_t* args, uint32_t* f_eax) {
+  lock_t* lock = (lock_t*)args[1];
+  struct process* pcb = thread_current()->pcb;
+  *lock = pcb->next_lock_ID;
+  pcb->next_lock_ID++;
+  struct user_lock* actual_lock = malloc(sizeof(struct user_lock));
+  actual_lock->id = *lock;
+  lock_init(&actual_lock->lock);
+  list_push_back(&pcb->user_locks, &actual_lock->elem);
+  *f_eax = (uint32_t)true;
+}
+
+static void syscall_lock_acquire(uint32_t* args, uint32_t* f_eax) {
+  lock_t* lock = (lock_t*)args[1];
+  struct process* pcb = thread_current()->pcb;
+  struct list_elem* e = list_begin(&pcb->user_locks);
+  while (e != list_end(&pcb->user_locks)) {
+    struct user_lock actual_lock = list_entry(e, struct user_lock, elem);
+    if (actual_lock->id == *lock) { // This is the lock we need to acquire
+      lock_acquire(&actual_lock->lock);
+      *f_eax = (uint32_t)true;
+      return;
+    }
+    e = list_next(e);
+  }
+  *f_eax = (uint32_t)false;
+}
+
+static void syscall_lock_release(uint32_t* args, uint32_t* f_eax) {
+  lock_t* lock = (lock_t*)args[1];
+  struct process* pcb = thread_current()->pcb;
+  struct list_elem* e = list_begin(&pcb->user_locks);
+  while (e != list_end(&pcb->user_locks)) {
+    struct user_lock actual_lock = list_entry(e, struct user_lock, elem);
+    if (actual_lock->id == *lock) { // This is the lock we need to acquire
+      lock_release(&actual_lock->lock);
+      *f_eax = (uint32_t)true;
+      return;
+    }
+    e = list_next(e);
+  }
+  *f_eax = (uint32_t)false;
+}
+
+static void syscall_sema_init(uint32_t* args, uint32_t* f_eax) {
+  sema_t* sema = (sema_t*)args[1];
+  struct process* pcb = thread_current()->pcb;
+  *sema = pcb->next_sema_ID;
+  pcb->next_sema_ID++;
+  struct user_semaphore* actual_sema = malloc(sizeof(struct user_semaphore));
+  actual_sema->id = *sema;
+  sema_init(&actual_sema->sema);
+  list_push_back(&pcb->user_semaphores, &actual_sema->elem);
+  *f_eax = (uint32_t)true;
+}
+
+static void syscall_sema_down(uint32_t* args, uint32_t* f_eax) {
+  sema_t* sema = (sema_t*)args[1];
+  struct process* pcb = thread_current()->pcb;
+  struct list_elem* e = list_begin(&pcb->user_semaphores);
+  while (e != list_end(&pcb->user_semaphores)) {
+    struct user_semaphore actual_sema = list_entry(e, struct user_semaphore, elem);
+    if (actual_sema->id == *sema) { // This is the lock we need to acquire
+      sema_down(&actual_sema->sema);
+      *f_eax = (uint32_t)true;
+      return;
+    }
+    e = list_next(e);
+  }
+  *f_eax = (uint32_t)false;
+}
+
+static void syscall_sema_up(uint32_t* args, uint32_t* f_eax) {
+  sema_t* sema = (sema_t*)args[1];
+  struct process* pcb = thread_current()->pcb;
+  struct list_elem* e = list_begin(&pcb->user_semaphores);
+  while (e != list_end(&pcb->user_semaphores)) {
+    struct user_semaphore actual_sema = list_entry(e, struct user_semaphore, elem);
+    if (actual_sema->id == *sema) { // This is the lock we need to acquire
+      sema_up(&actual_sema->sema);
+      *f_eax = (uint32_t)true;
+      return;
+    }
+    e = list_next(e);
+  }
+  *f_eax = (uint32_t)false;
 }
 
 static void syscall_handler(struct intr_frame* f) {

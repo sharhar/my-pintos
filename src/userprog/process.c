@@ -190,8 +190,16 @@ static void start_process(void* _startInfo) {
   lock_init(&t->pcb->parental_control_block->reference_lock);
   sema_init(&t->pcb->parental_control_block->sem, 0);
 
+  lock_init(&t->pcb->threads_lock);
+  lock_init(&t->pcb->locks_lock);
+  lock_init(&t->pcb->semaphores_lock);
+  lock_init(&t->pcb->children_lock);
+
   list_init(&t->pcb->children);
   list_init(&t->pcb->files);
+  list_init(&t->pcb->user_threads);
+  list_init(&t->pcb->user_locks);
+  list_init(&t->pcb->user_semaphores);
 
   struct process_file* proc_file = malloc(sizeof(struct process_file));
   proc_file->fd = 2;
