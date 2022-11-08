@@ -146,7 +146,10 @@ void timer_print_stats(void) { printf("Timer: %" PRId64 " ticks\n", timer_ticks(
 
 /* Timer interrupt handler. */
 static void timer_interrupt(struct intr_frame* args UNUSED) {
-  ticks++;  
+  ticks++;
+
+  int curr_priority = thread_get_priority();
+  bool must_yeild_on_return = false;
 
   while (!list_empty(&sleeping_threads)) {
     struct sleeping_thread* sleepy_boi = list_entry(list_begin(&sleeping_threads), 
@@ -155,9 +158,15 @@ static void timer_interrupt(struct intr_frame* args UNUSED) {
     if(sleepy_boi->wake_time > ticks)
       break;
 
+    if(!must_yeild_on_return && thread_get_priority_ext(sleepy_boi->thread) > curr_priority)
+      must_yeild_on_return = true;
+
     list_pop_front(&sleeping_threads);
     thread_unblock(sleepy_boi->thread);
   }
+
+  if(must_yeild_on_return)
+    intr_yield_on_return();
   
   thread_tick();
 }

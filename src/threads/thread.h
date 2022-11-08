@@ -93,6 +93,8 @@ struct thread {
   /* Shared between thread.c and synch.c. */
   struct list_elem elem; /* List element. */
 
+  struct list held_locks;
+
 #ifdef USERPROG
   /* Owned by process.c. */
   struct process* pcb; /* Process control block if this thread is a userprog */
@@ -145,7 +147,11 @@ typedef void thread_action_func(struct thread* t, void* aux);
 void thread_foreach(thread_action_func*, void*);
 
 int thread_get_priority(void);
+int thread_get_priority_ext(struct thread* t);
 void thread_set_priority(int);
+
+// Searches through thread list and finds the most important thread
+struct thread* thread_get_most_important(struct list* lst, int* max_priority);
 
 int thread_get_nice(void);
 void thread_set_nice(int);
