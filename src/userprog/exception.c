@@ -79,9 +79,7 @@ static void kill(struct intr_frame* f) {
       printf("%s: dying due to interrupt %#04x (%s).\n", thread_name(), f->vec_no,
              intr_name(f->vec_no));
       intr_dump_frame(f);
-      char* proc_name = thread_current()->pcb->process_name;
-      printf("%s: exit(%d)\n", proc_name, -1);
-      process_exit();
+      process_exit(-1);
       NOT_REACHED();
 
     case SEL_KCSEG:
@@ -143,9 +141,7 @@ static void page_fault(struct intr_frame* f) {
   // of shutting down the machine
   struct thread* curr_thread = thread_current();
   if(!user && curr_thread->in_syscall && is_user_vaddr(fault_addr) && curr_thread->pcb != NULL) {
-      curr_thread->in_syscall = false;
-      printf("%s: exit(%d)\n", curr_thread->pcb->process_name, -1);
-      process_exit();
+      process_exit(-1);
       NOT_REACHED();
   }
 

@@ -26,20 +26,6 @@ static thread_func start_pthread NO_RETURN;
 static bool load(const char* file_name, void (**eip)(void), void** esp, struct file** filePtr);
 bool setup_thread(void (**eip)(void), void** esp);
 
-static struct lock nextPidLock;
-static pid_t nextPid = 1;
-
-static pid_t getNextPid() {
-  lock_acquire(&nextPidLock);
-
-  pid_t return_val = nextPid;
-  nextPid++;
-
-  lock_release(&nextPidLock);
-
-  return return_val;
-}
-
 /* Initializes user programs in the system by ensuring the main
    thread has a minimal PCB so that it can execute and wait for
    the first user process. Any additions to the PCB should be also
@@ -56,10 +42,9 @@ void userprog_init(void) {
   t->pcb = calloc(sizeof(struct process), 1);
   success = t->pcb != NULL;
 
+  lock_init(&t->pcb->children_lock);
   list_init(&t->pcb->children);
   list_init(&t->pcb->files);
-
-  lock_init(&nextPidLock);
 
   /* Kill the kernel if we did not succeed */
   ASSERT(success);
@@ -123,7 +108,10 @@ pid_t process_execute(const char* file_name) {
     return -1;
   }
 
-  list_push_back(&thread_current()->pcb->children, &newProc->elem);
+  struct process* pcb = thread_current()->pcb;
+  lock_acquire(&pcb->children_lock);
+  list_push_back(&pcb->children, &newProc->elem);
+  lock_release(&pcb->children_lock);
 
   return newProc->pid;
 }
@@ -139,7 +127,7 @@ static void start_process(void* _startInfo) {
   struct file* proc_file_handle;
 
   /* Allocate process control block */
-  struct process* new_pcb = malloc(sizeof(struct process));
+  struct process* new_pcb = palloc_get_page(0);
   success = pcb_success = new_pcb != NULL;
 
   /* Initialize process control block */
@@ -170,7 +158,7 @@ static void start_process(void* _startInfo) {
     // can try to activate the pagedir, but it is now freed memory
     struct process* pcb_to_free = t->pcb;
     t->pcb = NULL;
-    free(pcb_to_free);
+    palloc_free_page(pcb_to_free);
   }
 
   struct semaphore* start_sema = startInfo->sema;
@@ -183,9 +171,10 @@ static void start_process(void* _startInfo) {
     thread_exit();
   }
 
+  /* In this section we initialize all the variables in struct process */
   t->pcb->parental_control_block->reference_count = 2;
   t->pcb->parental_control_block->exit_code = -1;
-  t->pcb->parental_control_block->pid = getNextPid();
+  t->pcb->parental_control_block->pid = thread_tid();
   
   lock_init(&t->pcb->parental_control_block->reference_lock);
   sema_init(&t->pcb->parental_control_block->sem, 0);
@@ -207,10 +196,30 @@ static void start_process(void* _startInfo) {
   list_init(&t->pcb->user_locks);
   list_init(&t->pcb->user_semaphores);
 
-  struct process_file* proc_file = malloc(sizeof(struct process_file));
+
+  /* In this section we finish intilizing the lists in 
+     struct process by adding all the initial elements
+     needed for a process.*/
+    
+  // Init the alloc-only process heap
+  struct process_heap_page* heap_page = t->pcb + 1;
+  heap_page->freeBase = heap_page + 1;
+  heap_page->freeSpace = PGSIZE - sizeof(struct process_heap_page) 
+                                - sizeof(struct process);
+  list_push_front(&t->pcb->heap_pages, &heap_page->elem);
+
+  struct process_file* proc_file = process_heap_alloc(sizeof(struct process_file));
   proc_file->fd = 2;
   proc_file->filePtr = proc_file_handle;
   list_push_front(&t->pcb->files, &proc_file->elem);
+
+  struct user_thread* uthread = process_heap_alloc(sizeof(struct user_thread));
+  uthread->tid = thread_tid();
+  uthread->exiting = false;
+  uthread->user_stack = pg_round_down(if_.esp);
+  lock_init(&uthread->lock);
+  thread_current()->user_control = uthread;
+  lock_acquire(&uthread->lock);
 
   *exec_success = true;
 
@@ -238,25 +247,35 @@ static void start_process(void* _startInfo) {
    This function will be implemented in problem 2-2.  For now, it
    does nothing. */
 int process_wait(pid_t child_pid) {
-  struct list* children = &thread_current()->pcb->children;
+  struct process* pcb = thread_current()->pcb;
 
-  struct list_elem* e;
+  lock_acquire(&pcb->children_lock);
 
-  for(e = list_begin(children); e != list_end(children); e = list_next(e)) {
+  struct child_process* child_proc = NULL;
+  struct list_elem* e = list_begin(&pcb->children);
+  while(e != list_end(&pcb->children)) {
     struct child_process* cp = list_entry(e, struct child_process, elem);
 
     if(cp->pid == child_pid) {
-      sema_down(&cp->sem);
-
-      list_remove(&cp->elem);
-
-      int return_code = cp->exit_code;
-
-      free(cp);
-      return return_code;
+      child_proc = cp;
+      break;
     }
+
+    e = list_next(e);
   }
-  return -1;
+
+  lock_release(&pcb->children_lock);
+
+  int return_code = -1;
+
+  if(child_proc != NULL) {
+    sema_down(&child_proc->sem);
+    list_remove(&child_proc->elem);
+    return_code = child_proc->exit_code;
+    free(child_proc);
+  }
+
+  return return_code;
 }
 
 static void free_process_children(struct process* pcb) {
@@ -336,7 +355,7 @@ static void close_process_files(struct process* pcb) {
 }
 
 /* Free the current process's resources. */
-void process_exit(void) {
+void process_exit(int exit_code) {
   struct thread* cur = thread_current();
   uint32_t* pd;
 
@@ -346,19 +365,33 @@ void process_exit(void) {
     NOT_REACHED();
   }
 
-  free_process_children(cur->pcb);
-  close_process_files(cur->pcb);
+  // TODO: add pthread exit to call stack of all OTHER threads
 
-  struct list_elem* e = list_begin(&cur->pcb->heap_pages);
-  while(e != list_end(&cur->pcb->heap_pages)) {
-    struct process_heap_page* heap_page = list_entry(e, struct process_heap_page, elem);
+  pthread_exit();
+
+  struct process* pcb = cur->pcb;
+  cur->pcb = NULL;
+
+  //Join on all threads
+  struct list_elem* e = list_begin(&pcb->user_threads);
+  while(e != list_end(&pcb->user_threads)) {
+    struct user_thread* uthread = list_entry(e, struct user_thread, elem);
+    lock_acquire(&uthread->lock);
+    lock_release(&uthread->lock);
     e = list_next(e);
-    palloc_free_page(heap_page);
   }
+
+  if(pcb->parental_control_block != NULL)
+    pcb->parental_control_block->exit_code = exit_code;
+  
+  printf("%s: exit(%d)\n", pcb->process_name, exit_code);
+
+  free_process_children(pcb);
+  close_process_files(pcb);
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
-  pd = cur->pcb->pagedir;
+  pd = pcb->pagedir;
   if (pd != NULL) {
     /* Correct ordering here is crucial.  We must set
          cur->pcb->pagedir to NULL before switching page directories,
@@ -367,18 +400,23 @@ void process_exit(void) {
          directory before destroying the process's page
          directory, or our active page directory will be one
          that's been freed (and cleared). */
-    cur->pcb->pagedir = NULL;
+    pcb->pagedir = NULL;
     pagedir_activate(NULL);
     pagedir_destroy(pd);
   }
 
-  /* Free the PCB of this process and kill this thread
-     Avoid race where PCB is freed before t->pcb is set to NULL
-     If this happens, then an unfortuantely timed timer interrupt
-     can try to activate the pagedir, but it is now freed memory */
-  struct process* pcb_to_free = cur->pcb;
-  cur->pcb = NULL;
-  free(pcb_to_free);
+  
+  // Free all the pages of the process
+  ASSERT(list_size(&pcb->heap_pages) > 0);
+  ASSERT(pg_round_down(list_end(&pcb->heap_pages)->prev) == pcb);
+  
+  e = list_begin(&pcb->heap_pages);
+  void* last_addr = list_end(&pcb->heap_pages);
+  while(e != last_addr) {
+    void* page_addr = pg_round_down(e);
+    e = list_next(e);
+    palloc_free_page(page_addr);
+  }
 
   thread_exit();
 }
@@ -873,7 +911,29 @@ tid_t pthread_join(tid_t tid UNUSED) { return -1; }
 
    This function will be implemented in Project 2: Multithreading. For
    now, it does nothing. */
-void pthread_exit(void) {}
+void pthread_exit(void) {
+  struct user_thread* uthread = thread_current()->user_control;
+  if(uthread == NULL) return;
+  uthread->exiting = true;
+  barrier();
+
+  uint32_t stack_kpage = pagedir_get_page(thread_current()->pcb->pagedir, uthread->user_stack);
+  ASSERT(stack_kpage != NULL)
+  pagedir_clear_page(thread_current()->pcb->pagedir, uthread->user_stack);
+  palloc_free_page(stack_kpage);
+
+  struct list_elem* e = list_begin(&thread_current()->held_locks);
+  while(e != list_end(&thread_current()->held_locks)) {
+    struct lock* lck = list_entry(e, struct lock, elem);
+
+    if(lck != &uthread->lock)
+      lock_release(lck);
+
+    e = list_next(e);
+  }
+
+  lock_release(&uthread->lock);
+}
 
 /* Only to be used when the main thread explicitly calls pthread_exit.
    The main thread should wait on all threads in the process to

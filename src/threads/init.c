@@ -329,12 +329,24 @@ static void run_userprog_kernel_task(char** argv) {
 }
 
 #ifdef THREADS
+
+extern test_func stack_frame_push_test;
+
 /* Runs the threads kernel task specified in ARGV[1]. */
 static void run_threads_kernel_task(char** argv) {
   const char* task = argv[1];
 
   printf("Executing '%s':\n", task);
-  run_threads_test(task);
+
+  if (!strcmp(task, "stack-frame-push-simple")) {
+    test_name = "stack-frame-push-simple";
+    msg("begin");
+    stack_frame_push_test();
+    msg("end");
+  } else {
+    run_threads_test(task);
+  }
+
   printf("Execution of '%s' complete.\n", task);
 }
 #endif

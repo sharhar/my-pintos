@@ -39,6 +39,7 @@ struct user_thread {
   tid_t tid;
   void* user_stack;
   struct lock lock;
+  bool exiting;
   struct list_elem elem;
 };
 
@@ -108,7 +109,7 @@ void userprog_init(void);
 
 pid_t process_execute(const char* file_name);
 int process_wait(pid_t);
-void process_exit(void);
+void process_exit(int exit_code);
 void process_activate(void);
 
 bool is_main_thread(struct thread*, struct process*);

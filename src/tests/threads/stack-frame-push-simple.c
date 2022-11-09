@@ -1,13 +1,16 @@
 #include <stdio.h>
-#include "tests/threads/tests.h"
 #include "threads/malloc.h"
 #include "threads/synch.h"
 #include "threads/thread.h"
 #include "devices/timer.h"
 #include "threads/interrupt.h"
 
-static void new_function_to_exec() {
+static void new_function_to_exec_first() {
     msg("Your stack has been hacked!");
+}
+
+static void new_function_to_exec_second() {
+    msg("And now you've fallen for my SECOND trap card!");
 }
 
 static void my_helper_func(struct semaphore* semas) {
@@ -21,7 +24,7 @@ static void my_helper_func(struct semaphore* semas) {
     sema_up(&semas[0]);
 }
 
-void test_stack_frame_push(void) {
+void stack_frame_push_test(void) {
     struct semaphore semas[2];
     sema_init(&semas[0], 0); 
     sema_init(&semas[1], 0);
@@ -34,7 +37,8 @@ void test_stack_frame_push(void) {
     sema_down(&semas[0]);
 
     enum intr_level old_level = intr_disable();
-    thread_stack_frame_push(t1, new_function_to_exec);
+    thread_stack_frame_push(t1, new_function_to_exec_second);
+    thread_stack_frame_push(t1, new_function_to_exec_first);
     intr_set_level(old_level);
 
     sema_up(&semas[1]);

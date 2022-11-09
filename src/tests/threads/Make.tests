@@ -11,7 +11,7 @@ st-matmul mt-matmul-2 mt-matmul-4 mt-matmul-16 \
 priority-donate-chain priority-starve priority-starve-sema \
 smfs-starve-0 smfs-starve-1 smfs-starve-2 smfs-starve-4 \
 smfs-starve-8 smfs-starve-16 smfs-starve-64 smfs-starve-256 \
-smfs-prio-change \
+smfs-prio-change stack-frame-push-simple \
 smfs-hierarchy-16 smfs-hierarchy-32 smfs-hierarchy-64 \
 )
 
@@ -65,6 +65,7 @@ tests/threads/mlfqs-block.output
 
 ALARM_TESTS       = $(filter tests/threads/alarm-%,$(tests/threads_TESTS))
                     # tests/threads/alarm-priority is included but overriden by SCHED_PRIO_TESTS
+
 SCHED_PRIO_TESTS  = $(filter tests/threads/priority-%,$(tests/threads_TESTS)) \
                     $(filter tests/threads/mt-matmul%,$(tests/threads_TESTS)) \
                     tests/threads/st-matmul \

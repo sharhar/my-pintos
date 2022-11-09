@@ -21,13 +21,6 @@
 struct lock global_file_lock;
 static int next_fd = 3;
 
-static void bad_user_pointer() {
-  char* proc_name = thread_current()->pcb->process_name;
-  printf("%s: exit(%d)\n", proc_name, -1);
-  process_exit();
-  NOT_REACHED();
-}
-
 static void check_user_pointer(char* userPtr, size_t memSize) {
   /* We have a clause in exception.c to handle invalid pointer dereferencing of a
       userspace pointer while in kernel mode. Therefore, the only validation we need 
@@ -37,11 +30,11 @@ static void check_user_pointer(char* userPtr, size_t memSize) {
       to know is whether or not the buffer is fully within userspace, and the begining of 
       the buffer will always be below the end of it, we only need to check the end to ensure
       that the whole block of memory is within userspace. */
-  if(!is_user_vaddr(userPtr + memSize - 1)) bad_user_pointer();
+  if(!is_user_vaddr(userPtr + memSize - 1)) process_exit(-1);
 }
 
 static void check_user_string(char* user_str) {
-  if(user_str == NULL) bad_user_pointer(); 
+  if(user_str == NULL) process_exit(-1);
 
   /* We can just call strlen because if we ever reach an invalid page inside of strnlen 
      it will just trigger a page_fault which will be handled properly inside of exception.c.
@@ -111,12 +104,9 @@ static struct user_semaphore* get_sema_from_id(sema_t id) {
   return NULL;
 }
 
-static void syscall_exit(uint32_t* args, uint32_t* f_eax) {
-  struct process* curr_pcb = thread_current()->pcb;
+static void syscall_exit(int32_t* args, int32_t* f_eax) {
   *f_eax = args[1];
-  if(curr_pcb->parental_control_block != NULL) curr_pcb->parental_control_block->exit_code = args[1];
-  printf("%s: exit(%d)\n", curr_pcb->process_name, args[1]);
-  process_exit();
+  process_exit(args[1]);
   NOT_REACHED();
 }
 
@@ -406,6 +396,18 @@ static void syscall_get_tid(uint32_t* args, uint32_t* f_eax) {
   *f_eax = (uint32_t)thread_tid();
 }
 
+static void syscall_pthread_create(uint32_t* args, uint32_t* f_eax) {
+
+}
+
+static void syscall_pthread_join(uint32_t* args, uint32_t* f_eax) {
+
+}
+
+static void syscall_pthread_exit(uint32_t* args, uint32_t* f_eax) {
+
+}
+
 static void syscall_handler(struct intr_frame* f) {
   thread_current()->in_syscall = true;
 
@@ -435,7 +437,10 @@ static void syscall_handler(struct intr_frame* f) {
     SYSCALL_ENTRY(SYS_SEMA_INIT, syscall_sema_init, 2)
     SYSCALL_ENTRY(SYS_SEMA_UP, syscall_sema_up, 1)
     SYSCALL_ENTRY(SYS_SEMA_DOWN, syscall_sema_down, 1)
-    SYSCALL_ENTRY(SYS_GET_TID, syscall_get_tid, 0);
+    SYSCALL_ENTRY(SYS_GET_TID, syscall_get_tid, 0)
+    SYSCALL_ENTRY(SYS_PT_CREATE, syscall_pthread_create, 3)
+    SYSCALL_ENTRY(SYS_PT_JOIN, syscall_pthread_join, 1)
+    SYSCALL_ENTRY(SYS_PT_EXIT, syscall_pthread_exit, 0)
   }
 
   thread_current()->in_syscall = false;
