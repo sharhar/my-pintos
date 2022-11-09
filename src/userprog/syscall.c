@@ -275,6 +275,10 @@ static void syscall_write(uint32_t* args, UNUSED uint32_t* f_eax) {
 
 static void syscall_lock_init(uint32_t* args, uint32_t* f_eax) {
   lock_t* lock = (lock_t*)args[1];
+  if (lock == NULL) {
+    *f_eax = (uint32_t)false;
+    return;
+  }
   struct process* pcb = thread_current()->pcb;
   *lock = pcb->next_lock_ID;
   pcb->next_lock_ID++;
@@ -287,13 +291,21 @@ static void syscall_lock_init(uint32_t* args, uint32_t* f_eax) {
 
 static void syscall_lock_acquire(uint32_t* args, uint32_t* f_eax) {
   lock_t* lock = (lock_t*)args[1];
+  if (lock == NULL) {
+    *f_eax = (uint32_t)false;
+    return;
+  }
   struct process* pcb = thread_current()->pcb;
   struct list_elem* e = list_begin(&pcb->user_locks);
   while (e != list_end(&pcb->user_locks)) {
     struct user_lock* actual_lock = list_entry(e, struct user_lock, elem);
     if (actual_lock->id == *lock) { // This is the lock we need to acquire
-      lock_acquire(&actual_lock->lock);
-      *f_eax = (uint32_t)true;
+      if (!lock_held_by_current_thread(&actual_lock->lock)) {
+        lock_acquire(&actual_lock->lock);
+        *f_eax = (uint32_t)true;
+      } else {
+        *f_eax = (uint32_t)false;
+      }
       return;
     }
     e = list_next(e);
@@ -303,13 +315,21 @@ static void syscall_lock_acquire(uint32_t* args, uint32_t* f_eax) {
 
 static void syscall_lock_release(uint32_t* args, uint32_t* f_eax) {
   lock_t* lock = (lock_t*)args[1];
+  if (lock == NULL) {
+    *f_eax = (uint32_t)false;
+    return;
+  }
   struct process* pcb = thread_current()->pcb;
   struct list_elem* e = list_begin(&pcb->user_locks);
   while (e != list_end(&pcb->user_locks)) {
     struct user_lock* actual_lock = list_entry(e, struct user_lock, elem);
     if (actual_lock->id == *lock) { // This is the lock we need to acquire
-      lock_release(&actual_lock->lock);
-      *f_eax = (uint32_t)true;
+      if (lock_held_by_current_thread(&actual_lock->lock)) {
+        lock_release(&actual_lock->lock);
+        *f_eax = (uint32_t)true;
+      } else {
+        *f_eax = (uint32_t)false;
+      }
       return;
     }
     e = list_next(e);
@@ -320,6 +340,10 @@ static void syscall_lock_release(uint32_t* args, uint32_t* f_eax) {
 static void syscall_sema_init(uint32_t* args, uint32_t* f_eax) {
   sema_t* sema = (sema_t*)args[1];
   int value = (int)args[2];
+  if (sema == NULL || value < 0) {
+    *f_eax = (uint32_t)false;
+    return;
+  }
   struct process* pcb = thread_current()->pcb;
   *sema = pcb->next_sema_ID;
   pcb->next_sema_ID++;
@@ -332,6 +356,10 @@ static void syscall_sema_init(uint32_t* args, uint32_t* f_eax) {
 
 static void syscall_sema_down(uint32_t* args, uint32_t* f_eax) {
   sema_t* sema = (sema_t*)args[1];
+  if (sema == NULL) {
+    *f_eax = (uint32_t)false;
+    return;
+  }
   struct process* pcb = thread_current()->pcb;
   struct list_elem* e = list_begin(&pcb->user_semaphores);
   while (e != list_end(&pcb->user_semaphores)) {
@@ -348,6 +376,10 @@ static void syscall_sema_down(uint32_t* args, uint32_t* f_eax) {
 
 static void syscall_sema_up(uint32_t* args, uint32_t* f_eax) {
   sema_t* sema = (sema_t*)args[1];
+  if (sema == NULL) {
+    *f_eax = (uint32_t)false;
+    return;
+  }
   struct process* pcb = thread_current()->pcb;
   struct list_elem* e = list_begin(&pcb->user_semaphores);
   while (e != list_end(&pcb->user_semaphores)) {
