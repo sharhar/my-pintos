@@ -190,13 +190,16 @@ static void start_process(void* _startInfo) {
   lock_init(&t->pcb->parental_control_block->reference_lock);
   sema_init(&t->pcb->parental_control_block->sem, 0);
 
+  list_init(&t->pcb->heap_pages);
+  lock_init(&t->pcb->heap_lock);
+
   lock_init(&t->pcb->threads_lock);
   lock_init(&t->pcb->locks_lock);
   lock_init(&t->pcb->semaphores_lock);
   lock_init(&t->pcb->children_lock);
 
-  lock_t next_lock_ID = 0;
-  sema_t next_sema_ID = 0;
+  t->pcb->next_lock_ID = 0;
+  t->pcb->next_sema_ID = 0;
 
   list_init(&t->pcb->children);
   list_init(&t->pcb->files);
@@ -317,13 +320,8 @@ static void free_process_children(struct process* pcb) {
   }
 }
 
-static void free_process_files(struct process* pcb) {
+static void close_process_files(struct process* pcb) {
   struct list_elem* e;
-
-  int list_len = list_size(&pcb->files);
-
-  void* to_be_deleted_pointers[list_len];
-  int child_process_index = 0;
 
   if(!lock_held_by_current_thread(&global_file_lock))
     lock_acquire(&global_file_lock);
@@ -332,18 +330,9 @@ static void free_process_files(struct process* pcb) {
     struct process_file* pf = list_entry(e, struct process_file, elem);
 
     file_close(pf->filePtr);
-    
-    to_be_deleted_pointers[child_process_index] = pf;
-    child_process_index++;
   }
 
   lock_release(&global_file_lock);
-
-  ASSERT(child_process_index == list_len);
-
-  for(int i = 0; i < list_len; i++) {
-    free(to_be_deleted_pointers[i]);
-  }
 }
 
 /* Free the current process's resources. */
@@ -358,7 +347,14 @@ void process_exit(void) {
   }
 
   free_process_children(cur->pcb);
-  free_process_files(cur->pcb);
+  close_process_files(cur->pcb);
+
+  struct list_elem* e = list_begin(&cur->pcb->heap_pages);
+  while(e != list_end(&cur->pcb->heap_pages)) {
+    struct process_heap_page* heap_page = list_entry(e, struct process_heap_page, elem);
+    e = list_next(e);
+    palloc_free_page(heap_page);
+  }
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -402,6 +398,57 @@ void process_activate(void) {
   /* Set thread's kernel stack for use in processing interrupts.
      This does nothing if this is not a user process. */
   tss_update();
+}
+
+/* Allocates a buffer on the process's heap pages. This 
+   function should only be used to allocate small structs
+   that the process needs throughout its life which don't
+   need to be freed until the process exits (like user locks
+   and user semaphores). DO NOT use this function to allocate
+   large buffers!!! This function CANNOT allocate buffers
+   larger than PGSIZE - sizeof(struct process_heap_page).*/
+void* process_heap_alloc(size_t size) {
+  if(size > PGSIZE - sizeof(struct process_heap_page))
+    return NULL;
+
+  struct process* pcb = thread_current()->pcb;
+  if(pcb == NULL) return NULL;
+  
+  lock_acquire(&pcb->heap_lock);
+
+  // Search for space on existing pages and allocate if found
+  struct list_elem* e = list_begin(&pcb->heap_pages);
+  while(e != list_end(&pcb->heap_pages)) {
+    struct process_heap_page* heap_page = list_entry(e, struct process_heap_page, elem);
+
+    if(heap_page->freeSpace >= size) {
+      void* return_ptr = heap_page->freeBase;
+      heap_page->freeBase += size;
+      heap_page->freeSpace -= size;
+      lock_release(&pcb->heap_lock);
+      return return_ptr;
+    }
+
+    e = list_next(e);
+  }
+
+  // Allocate new heap page if no space is found
+  struct process_heap_page* new_page = palloc_get_page(0);
+
+  if(new_page == NULL) {
+    lock_release(&pcb->heap_lock);
+    return NULL;
+  }
+
+  new_page->freeBase = new_page + 1;
+  new_page->freeSpace = PGSIZE - sizeof(struct process_heap_page);
+  list_push_front(&pcb->heap_pages, &new_page->elem);
+
+  void* return_ptr = new_page->freeBase;
+  new_page->freeBase += size;
+  new_page->freeSpace -= size;
+  lock_release(&pcb->heap_lock);
+  return return_ptr;
 }
 
 /* We load ELF binaries.  The following definitions are taken

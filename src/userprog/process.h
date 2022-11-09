@@ -35,7 +35,6 @@ struct process_file {
   struct list_elem elem;
 };
 
-
 struct user_thread {
   tid_t tid;
   void* user_stack;
@@ -65,6 +64,12 @@ struct user_thread_init_info {
   struct semaphore sema;
 };
 
+struct process_heap_page {
+  uint8_t* freeBase;
+  size_t freeSpace;
+  struct list_elem elem;
+};
+
 /* The process control block for a given process. Since
    there can be multiple threads per process, we need a separate
    PCB from the TCB. All TCBs in a process will have a pointer
@@ -79,8 +84,10 @@ struct process {
   struct child_process* parental_control_block;
   struct list children;
 
-  struct list files;
+  struct list heap_pages;
+  struct lock heap_lock;
 
+  struct list files;
 
   struct lock children_lock;
 
@@ -106,6 +113,8 @@ void process_activate(void);
 
 bool is_main_thread(struct thread*, struct process*);
 pid_t get_pid(struct process*);
+
+void* process_heap_alloc(size_t size);
 
 tid_t pthread_execute(stub_fun, pthread_fun, void*);
 tid_t pthread_join(tid_t);
