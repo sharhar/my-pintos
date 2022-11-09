@@ -367,12 +367,16 @@ void process_exit(int exit_code) {
 
   // TODO: add pthread exit to call stack of all OTHER threads
 
-  pthread_exit();
+  //pthread_exit();
 
   struct process* pcb = cur->pcb;
   cur->pcb = NULL;
 
+  
+
   //Join on all threads
+  
+  /*
   struct list_elem* e = list_begin(&pcb->user_threads);
   while(e != list_end(&pcb->user_threads)) {
     struct user_thread* uthread = list_entry(e, struct user_thread, elem);
@@ -380,6 +384,7 @@ void process_exit(int exit_code) {
     lock_release(&uthread->lock);
     e = list_next(e);
   }
+  */
 
   if(pcb->parental_control_block != NULL)
     pcb->parental_control_block->exit_code = exit_code;
@@ -405,6 +410,13 @@ void process_exit(int exit_code) {
     pagedir_destroy(pd);
   }
 
+  struct list_elem* e = list_begin(&pcb->user_locks);
+  while(e != list_end(&pcb->user_locks)) {
+    struct user_lock* ulock = list_entry(e, struct user_lock, elem);
+    if(lock_held_by_current_thread(&ulock->lock))
+      lock_release(&ulock->lock);
+    e = list_next(e);
+  }
   
   // Free all the pages of the process
   ASSERT(list_size(&pcb->heap_pages) > 0);
