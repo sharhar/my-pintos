@@ -1018,7 +1018,6 @@ void pthread_exit(void) {
   lock_release(&pcb->locks_lock);
 
   lock_release(&uthread->lock);
-  thread_exit();
 }
 
 /* Only to be used when the main thread explicitly calls pthread_exit.
