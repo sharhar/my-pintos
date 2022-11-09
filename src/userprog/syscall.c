@@ -290,7 +290,7 @@ static void syscall_lock_acquire(uint32_t* args, uint32_t* f_eax) {
   struct process* pcb = thread_current()->pcb;
   struct list_elem* e = list_begin(&pcb->user_locks);
   while (e != list_end(&pcb->user_locks)) {
-    struct user_lock actual_lock = list_entry(e, struct user_lock, elem);
+    struct user_lock* actual_lock = list_entry(e, struct user_lock, elem);
     if (actual_lock->id == *lock) { // This is the lock we need to acquire
       lock_acquire(&actual_lock->lock);
       *f_eax = (uint32_t)true;
@@ -306,7 +306,7 @@ static void syscall_lock_release(uint32_t* args, uint32_t* f_eax) {
   struct process* pcb = thread_current()->pcb;
   struct list_elem* e = list_begin(&pcb->user_locks);
   while (e != list_end(&pcb->user_locks)) {
-    struct user_lock actual_lock = list_entry(e, struct user_lock, elem);
+    struct user_lock* actual_lock = list_entry(e, struct user_lock, elem);
     if (actual_lock->id == *lock) { // This is the lock we need to acquire
       lock_release(&actual_lock->lock);
       *f_eax = (uint32_t)true;
@@ -319,12 +319,13 @@ static void syscall_lock_release(uint32_t* args, uint32_t* f_eax) {
 
 static void syscall_sema_init(uint32_t* args, uint32_t* f_eax) {
   sema_t* sema = (sema_t*)args[1];
+  int value = (int)args[2];
   struct process* pcb = thread_current()->pcb;
   *sema = pcb->next_sema_ID;
   pcb->next_sema_ID++;
   struct user_semaphore* actual_sema = malloc(sizeof(struct user_semaphore));
   actual_sema->id = *sema;
-  sema_init(&actual_sema->sema);
+  sema_init(&actual_sema->sema, value);
   list_push_back(&pcb->user_semaphores, &actual_sema->elem);
   *f_eax = (uint32_t)true;
 }
@@ -334,7 +335,7 @@ static void syscall_sema_down(uint32_t* args, uint32_t* f_eax) {
   struct process* pcb = thread_current()->pcb;
   struct list_elem* e = list_begin(&pcb->user_semaphores);
   while (e != list_end(&pcb->user_semaphores)) {
-    struct user_semaphore actual_sema = list_entry(e, struct user_semaphore, elem);
+    struct user_semaphore* actual_sema = list_entry(e, struct user_semaphore, elem);
     if (actual_sema->id == *sema) { // This is the lock we need to acquire
       sema_down(&actual_sema->sema);
       *f_eax = (uint32_t)true;
@@ -350,7 +351,7 @@ static void syscall_sema_up(uint32_t* args, uint32_t* f_eax) {
   struct process* pcb = thread_current()->pcb;
   struct list_elem* e = list_begin(&pcb->user_semaphores);
   while (e != list_end(&pcb->user_semaphores)) {
-    struct user_semaphore actual_sema = list_entry(e, struct user_semaphore, elem);
+    struct user_semaphore* actual_sema = list_entry(e, struct user_semaphore, elem);
     if (actual_sema->id == *sema) { // This is the lock we need to acquire
       sema_up(&actual_sema->sema);
       *f_eax = (uint32_t)true;
@@ -387,7 +388,7 @@ static void syscall_handler(struct intr_frame* f) {
     SYSCALL_ENTRY(SYS_LOCK_INIT, syscall_lock_init, 1)
     SYSCALL_ENTRY(SYS_LOCK_ACQUIRE, syscall_lock_acquire, 1)
     SYSCALL_ENTRY(SYS_LOCK_RELEASE, syscall_lock_release, 1)
-    SYSCALL_ENTRY(SYS_SEMA_INIT, syscall_sema_init, 1)
+    SYSCALL_ENTRY(SYS_SEMA_INIT, syscall_sema_init, 2)
     SYSCALL_ENTRY(SYS_SEMA_UP, syscall_sema_up, 1)
     SYSCALL_ENTRY(SYS_SEMA_DOWN, syscall_sema_down, 1)
   }

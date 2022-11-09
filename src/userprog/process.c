@@ -195,6 +195,9 @@ static void start_process(void* _startInfo) {
   lock_init(&t->pcb->semaphores_lock);
   lock_init(&t->pcb->children_lock);
 
+  lock_t next_lock_ID = 0;
+  sema_t next_sema_ID = 0;
+
   list_init(&t->pcb->children);
   list_init(&t->pcb->files);
   list_init(&t->pcb->user_threads);

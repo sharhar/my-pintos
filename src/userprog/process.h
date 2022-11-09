@@ -4,6 +4,9 @@
 #include "threads/thread.h"
 #include <stdint.h>
 
+typedef char lock_t;
+typedef char sema_t;
+
 // At most 8MB can be allocated to the stack
 // These defines will be used in Project 2: Multithreading
 #define MAX_STACK_PAGES (1 << 11)
@@ -85,12 +88,12 @@ struct process {
   struct list user_locks;
   struct list user_semaphores;
 
-  lock_t next_lock_ID = 0;
-  sema_t next_sema_ID = 0;
+  lock_t next_lock_ID;
+  sema_t next_sema_ID;
 
   struct lock threads_lock;
   struct lock locks_lock;
-  struct lock sempahores_lock;
+  struct lock semaphores_lock;
 
 };
 
