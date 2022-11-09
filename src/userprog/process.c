@@ -871,7 +871,37 @@ pid_t get_pid(struct process* p) { return (pid_t)p->main_thread->tid; }
    This function will be implemented in Project 2: Multithreading. For
    now, it does nothing. You may find it necessary to change the
    function signature. */
-void* setup_thread(void (**eip)(void), void** esp, void* sfun, void* tfun, void* arg) { return NULL; }
+void* setup_thread(void (**eip)(void), void** esp, void* sfun, void* tfun, void* arg) {
+  uint8_t* kpage;
+  bool success = false;
+
+  kpage = palloc_get_page(PAL_USER | PAL_ZERO);
+
+  if (kpage != NULL) {
+    uint8_t* i = (uint8_t*)PHYS_BASE - 2 * PGSIZE;
+    struct thread* t = thread_current();
+    while (i > 0) {
+      success = pagedir_get_page(t->pcb->pagedir, i) == NULL;
+      if (success) {
+        success = pagedir_set_page(t->pcb->pagedir, i, kpage, true);
+        if (!success) {
+          palloc_free_page(kpage);
+          return NULL;
+        }
+        *eip = sfun;
+        char* new_esp = (char*)PHYS_BASE - 8;
+        // We copy the tfun and arg pointers to the top of the user's stack
+        memcpy(new_esp, &arg, 4);
+        memcpy(new_esp + 4, &tfun, 4);
+        //set the user stack to point to our setup stack
+        *esp = (void*)new_esp;
+        return *esp;
+      }
+      i = i - PGSIZE;
+    }
+  }
+  return NULL; 
+}
 
 /* Starts a new thread with a new user stack running SF, which takes
    TF and ARG as arguments on its user stack. This new thread may be
