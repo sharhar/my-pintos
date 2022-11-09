@@ -895,7 +895,31 @@ bool setup_thread(void (**eip)(void) UNUSED, void** esp UNUSED) { return false; 
    This function will be implemented in Project 2: Multithreading and
    should be similar to process_execute (). For now, it does nothing.
    */
-tid_t pthread_execute(stub_fun sf UNUSED, pthread_fun tf UNUSED, void* arg UNUSED) { return -1; }
+tid_t pthread_execute(stub_fun sf, pthread_fun tf, void* arg) { 
+  struct user_thread_init_info* info = malloc(sizeof(struct user_thread_init_info));
+  info->pcb = thread_current()->pcb;
+  info->sfun = sf;
+  info->tfun = tf;
+  info->arg = arg;
+  info->success = false;
+  info->user_stack = (void*)thread_current()->stack;
+  sema_init(&info->sema, 1);
+  struct thread* t = thread_create("asdf", PRI_DEFAULT, start_pthread, info);
+  sema_down(&info->sema);
+  if (!info->success) {
+    free(info);
+    return TID_ERROR;
+  }
+  struct user_thread* uthread = malloc(sizeof(uthread));
+  uthread->tid = t->tid;
+  uthread->user_stack = t->stack;
+  lock_init(&uthread->lock);
+  lock_acquire(&t->pcb->threads_lock);
+  list_push_back(&t->pcb->user_threads, &uthread->elem);
+  lock_release(&t->pcb->threads_lock);
+  free(info);
+  return t->tid;
+}
 
 /* A thread function that creates a new user thread and starts it
    running. Responsible for adding itself to the list of threads in
@@ -903,7 +927,22 @@ tid_t pthread_execute(stub_fun sf UNUSED, pthread_fun tf UNUSED, void* arg UNUSE
 
    This function will be implemented in Project 2: Multithreading and
    should be similar to start_process (). For now, it does nothing. */
-static void start_pthread(void* exec_ UNUSED) {}
+static void start_pthread(void* exec_) {
+  struct intr_frame* iframe = malloc(sizeof(struct intr_frame));
+  struct user_thread_init_info* info = (struct user_thread_init_info*)exec_;
+  thread_current()->pcb = info->pcb;
+  process_activate();
+  info->user_stack = setup_thread(&iframe->eip, &iframe->esp, &info->sfun, &info->tfun, info->arg);
+  if (info->user_stack == NULL) {
+    free(iframe);
+    sema_up(&info->sema);
+    thread_exit();
+  }
+  info->success = true;
+  sema_up(&info->sema);
+  asm volatile("movl %0, %%esp; jmp intr_exit" : : "g"(&iframe) : "memory");
+  NOT_REACHED();
+}
 
 /* Waits for thread with TID to die, if that thread was spawned
    in the same process and has not been waited on yet. Returns TID on
@@ -912,7 +951,20 @@ static void start_pthread(void* exec_ UNUSED) {}
 
    This function will be implemented in Project 2: Multithreading. For
    now, it does nothing. */
-tid_t pthread_join(tid_t tid UNUSED) { return -1; }
+tid_t pthread_join(tid_t tid) {
+  struct process* pcb = thread_current()->pcb;
+  struct list_elem* e = list_begin(&pcb->user_threads);
+  while (e != list_end(&pcb->user_threads)) {
+    struct user_thread* uthread = list_entry(e, struct user_thread, elem);
+    if (uthread->tid == tid) {
+      lock_acquire(&uthread->lock);
+      lock_release(&uthread->lock);
+      return tid;
+    }
+    e = list_next(e);
+  }
+  return TID_ERROR; 
+}
 
 /* Free the current thread's resources. Most resources will
    be freed on thread_exit(), so all we have to do is deallocate the
@@ -945,6 +997,7 @@ void pthread_exit(void) {
   }
 
   lock_release(&uthread->lock);
+  thread_exit();
 }
 
 /* Only to be used when the main thread explicitly calls pthread_exit.
@@ -955,4 +1008,17 @@ void pthread_exit(void) {
 
    This function will be implemented in Project 2: Multithreading. For
    now, it does nothing. */
-void pthread_exit_main(void) {}
+void pthread_exit_main(void) {
+  ASSERT(thread_current() == thread_current()->pcb->main_thread);
+  struct user_thread* main_uthread = thread_current()->user_control;
+  lock_release(&main_uthread->lock);
+  struct list_elem* e = list_begin(&thread_current()->pcb->user_threads);
+  while (e != list_end(&thread_current()->pcb->user_threads)) {
+    struct user_thread* uthread = list_entry(e, struct user_thread, elem);
+    if (uthread != main_uthread) {
+      pthread_join(uthread->tid);
+    }
+    e = list_next(e);
+  }
+  process_exit(0);
+}
