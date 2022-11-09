@@ -235,7 +235,6 @@ static void start_process(void* _startInfo) {
    This function will be implemented in problem 2-2.  For now, it
    does nothing. */
 int process_wait(pid_t child_pid) {
-  lock_acquire(&thread_current()->pcb->children_lock);
   struct list* children = &thread_current()->pcb->children;
 
   struct list_elem* e;
@@ -251,11 +250,9 @@ int process_wait(pid_t child_pid) {
       int return_code = cp->exit_code;
 
       free(cp);
-      lock_release(&thread_current()->pcb->children_lock);
       return return_code;
     }
   }
-  lock_release(&thread_current()->pcb->children_lock);
   return -1;
 }
 
