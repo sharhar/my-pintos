@@ -24,7 +24,7 @@
 static thread_func start_process NO_RETURN;
 static thread_func start_pthread NO_RETURN;
 static bool load(const char* file_name, void (**eip)(void), void** esp, struct file** filePtr);
-bool setup_thread(void (**eip)(void), void** esp);
+void* setup_thread(void (**eip)(void), void** esp, void* sfun, void* tfun, void* arg);
 
 /* Initializes user programs in the system by ensuring the main
    thread has a minimal PCB so that it can execute and wait for
@@ -871,7 +871,7 @@ pid_t get_pid(struct process* p) { return (pid_t)p->main_thread->tid; }
    This function will be implemented in Project 2: Multithreading. For
    now, it does nothing. You may find it necessary to change the
    function signature. */
-bool setup_thread(void (**eip)(void) UNUSED, void** esp UNUSED) { return false; }
+void* setup_thread(void (**eip)(void), void** esp, void* sfun, void* tfun, void* arg) { return NULL; }
 
 /* Starts a new thread with a new user stack running SF, which takes
    TF and ARG as arguments on its user stack. This new thread may be
