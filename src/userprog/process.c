@@ -367,16 +367,12 @@ void process_exit(int exit_code) {
 
   // TODO: add pthread exit to call stack of all OTHER threads
 
-  //pthread_exit();
+  pthread_exit();
 
   struct process* pcb = cur->pcb;
   cur->pcb = NULL;
-
   
-
   //Join on all threads
-  
-  /*
   struct list_elem* e = list_begin(&pcb->user_threads);
   while(e != list_end(&pcb->user_threads)) {
     struct user_thread* uthread = list_entry(e, struct user_thread, elem);
@@ -384,7 +380,6 @@ void process_exit(int exit_code) {
     lock_release(&uthread->lock);
     e = list_next(e);
   }
-  */
 
   if(pcb->parental_control_block != NULL)
     pcb->parental_control_block->exit_code = exit_code;
@@ -408,14 +403,6 @@ void process_exit(int exit_code) {
     pcb->pagedir = NULL;
     pagedir_activate(NULL);
     pagedir_destroy(pd);
-  }
-
-  struct list_elem* e = list_begin(&pcb->user_locks);
-  while(e != list_end(&pcb->user_locks)) {
-    struct user_lock* ulock = list_entry(e, struct user_lock, elem);
-    if(lock_held_by_current_thread(&ulock->lock))
-      lock_release(&ulock->lock);
-    e = list_next(e);
   }
   
   // Free all the pages of the process
@@ -929,20 +916,24 @@ void pthread_exit(void) {
   uthread->exiting = true;
   barrier();
 
-  uint32_t stack_kpage = pagedir_get_page(thread_current()->pcb->pagedir, uthread->user_stack);
+  struct process* pcb = thread_current()->pcb;
+
+  uint32_t stack_kpage = pagedir_get_page(pcb->pagedir, uthread->user_stack);
   ASSERT(stack_kpage != NULL)
-  pagedir_clear_page(thread_current()->pcb->pagedir, uthread->user_stack);
+  pagedir_clear_page(pcb->pagedir, uthread->user_stack);
   palloc_free_page(stack_kpage);
 
-  struct list_elem* e = list_begin(&thread_current()->held_locks);
-  while(e != list_end(&thread_current()->held_locks)) {
-    struct lock* lck = list_entry(e, struct lock, elem);
+  lock_acquire(&pcb->locks_lock);
 
-    if(lck != &uthread->lock)
-      lock_release(lck);
-
+  struct list_elem* e = list_begin(&pcb->user_locks);
+  while(e != list_end(&pcb->user_locks)) {
+    struct user_lock* ulock = list_entry(e, struct user_lock, elem);
+    if(lock_held_by_current_thread(&ulock->lock))
+      lock_release(&ulock->lock);
     e = list_next(e);
   }
+
+  lock_release(&pcb->locks_lock);
 
   lock_release(&uthread->lock);
 }

@@ -88,12 +88,14 @@ struct thread {
   char name[16];             /* Name (for debugging purposes). */
   uint8_t* stack;            /* Saved stack pointer. */
   int priority;              /* Priority. */
+  int base_priority;         /* Base Priority. */
   struct list_elem allelem;  /* List element for all threads list. */
 
   /* Shared between thread.c and synch.c. */
   struct list_elem elem; /* List element. */
 
   struct list held_locks;
+  struct lock* waiting_for_lock;
 
 #ifdef USERPROG
   /* Owned by process.c. */
@@ -148,8 +150,10 @@ typedef void thread_action_func(struct thread* t, void* aux);
 void thread_foreach(thread_action_func*, void*);
 
 int thread_get_priority(void);
-int thread_get_priority_ext(struct thread* t);
+void thread_update_priority(struct thread* t);
 void thread_set_priority(int);
+
+void thread_priority_trickle_up(void);
 
 // Searches through thread list and finds the most important thread
 struct thread* thread_get_most_important(struct list* lst, int* max_priority);

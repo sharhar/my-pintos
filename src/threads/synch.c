@@ -56,17 +56,18 @@ void sema_init(struct semaphore* sema, unsigned value) {
    interrupts disabled, but if it sleeps then the next scheduled
    thread will probably turn interrupts back on. */
 void sema_down(struct semaphore* sema) {
-  enum intr_level old_level;
-
   ASSERT(sema != NULL);
   ASSERT(!intr_context());
 
-  old_level = intr_disable();
+  enum intr_level old_level = intr_disable();
+  
   while (sema->value == 0) {
     list_push_back(&sema->waiters, &thread_current()->elem);
+    thread_priority_trickle_up();
     thread_block();
   }
   sema->value--;
+
   intr_set_level(old_level);
 }
 
@@ -193,9 +194,12 @@ void lock_acquire(struct lock* lock) {
   ASSERT(!lock_held_by_current_thread(lock));
 
   enum intr_level old_level = intr_disable();
+  thread_current()->waiting_for_lock = lock;
   sema_down(&lock->semaphore);
+  thread_current()->waiting_for_lock = NULL;
   lock->holder = thread_current();
   list_push_back(&thread_current()->held_locks, &lock->elem);
+  thread_update_priority(thread_current());
   intr_set_level(old_level);
 }
 
@@ -216,6 +220,7 @@ bool lock_try_acquire(struct lock* lock) {
   if (success) {
     lock->holder = thread_current();
     list_push_back(&thread_current()->held_locks, &lock->elem);
+    thread_update_priority(thread_current());
   }
   intr_set_level(old_level);
   return success;
@@ -233,6 +238,7 @@ void lock_release(struct lock* lock) {
   enum intr_level old_level = intr_disable();
   list_remove(&lock->elem);
   lock->holder = NULL;
+  thread_update_priority(thread_current());
   sema_up(&lock->semaphore);
   intr_set_level(old_level);
 }
@@ -378,11 +384,11 @@ void cond_signal(struct condition* cond, struct lock* lock UNUSED) {
 
     while(e != list_end(&cond->waiters)) {
       struct semaphore_elem* patient_boi = list_entry(e, struct semaphore_elem, elem);
-      int patient_priority = thread_get_priority_ext(patient_boi->t);
+      thread_update_priority(patient_boi->t);
 
-      if(important_boi == NULL || max_priority < patient_priority) {
+      if(important_boi == NULL || max_priority < patient_boi->t->priority) {
         important_boi = patient_boi;
-        max_priority = patient_priority;
+        max_priority = patient_boi->t->priority;
       }
 
       e = list_next(e);

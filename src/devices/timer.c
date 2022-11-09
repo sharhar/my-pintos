@@ -158,7 +158,7 @@ static void timer_interrupt(struct intr_frame* args UNUSED) {
     if(sleepy_boi->wake_time > ticks)
       break;
 
-    if(!must_yeild_on_return && thread_get_priority_ext(sleepy_boi->thread) > curr_priority)
+    if(!must_yeild_on_return && sleepy_boi->thread->priority > curr_priority)
       must_yeild_on_return = true;
 
     list_pop_front(&sleeping_threads);

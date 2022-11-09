@@ -62,7 +62,7 @@ static tid_t allocate_tid(void);
 void thread_switch_tail(struct thread* prev);
 
 static void kernel_thread(thread_func*, void* aux);
-static void idle(void* aux UNUSED);
+static void idle(void* aux);
 static struct thread* running_thread(void);
 
 static struct thread* next_thread_to_run(void);
@@ -338,13 +338,16 @@ void thread_foreach(thread_action_func* func, void* aux) {
 
 /* Sets the current thread's priority to NEW_PRIORITY. */
 void thread_set_priority(int new_priority) {
-  thread_current()->priority = new_priority;
-
-  int my_priority = thread_get_priority();
-
-  int max_priority;
   enum intr_level old_level = intr_disable();
+  
+  // Update priority
+  thread_current()->base_priority = new_priority;
+  thread_update_priority(thread_current());
+  
+  int max_priority;
   thread_get_most_important(&fifo_ready_list, &max_priority);
+  int my_priority = thread_get_priority();
+  
   intr_set_level(old_level);
 
   if(max_priority > my_priority){
@@ -355,10 +358,10 @@ void thread_set_priority(int new_priority) {
   }
 }
 
-int thread_get_priority_ext(struct thread* t) {
+void thread_update_priority(struct thread* t) {
   ASSERT(intr_get_level() == INTR_OFF);
 
-  int max_priority = t->priority;
+  int max_priority = t->base_priority;
 
   struct list_elem* e = list_begin(&t->held_locks);
   while(e != list_end(&t->held_locks)) {
@@ -367,7 +370,8 @@ int thread_get_priority_ext(struct thread* t) {
     struct list_elem* e2 = list_begin(&lck->semaphore.waiters);
     while(e2 != list_end(&lck->semaphore.waiters)) {
       struct thread* wait_thread = list_entry(e2, struct thread, elem);
-      int wait_priority = thread_get_priority_ext(wait_thread);
+      //thread_update_priority(wait_thread);
+      int wait_priority = wait_thread->priority;
 
       if(wait_priority > max_priority)
         max_priority = wait_priority;
@@ -378,15 +382,28 @@ int thread_get_priority_ext(struct thread* t) {
     e = list_next(e);
   }
 
-  return max_priority;
+  t->priority = max_priority;
+}
+
+static void thread_priority_trickle_up_helper(struct thread* t) {
+  ASSERT(intr_get_level() == INTR_OFF);
+
+  thread_update_priority(t);
+
+  if(t->waiting_for_lock != NULL)
+    thread_priority_trickle_up_helper(t->waiting_for_lock->holder);
+}
+
+void thread_priority_trickle_up(void) {
+  struct thread* t = thread_current();
+
+  if(t->waiting_for_lock != NULL)
+    thread_priority_trickle_up_helper(t);
 }
 
 /* Returns the current thread's priority. */
 int thread_get_priority(void) {
-  enum intr_level old_level = intr_disable();
-  int result = thread_get_priority_ext(thread_current());
-  intr_set_level(old_level);
-  return result;
+  return thread_current()->priority;
 }
 
 /* Sets the current thread's nice value to NICE. */
@@ -420,7 +437,7 @@ int thread_get_recent_cpu(void) {
    blocks.  After that, the idle thread never appears in the
    ready list.  It is returned by next_thread_to_run() as a
    special case when the ready list is empty. */
-static void idle(void* idle_started_ UNUSED) {
+static void idle(void* idle_started_) {
   struct semaphore* idle_started = idle_started_;
   idle_thread = thread_current();
   sema_up(idle_started);
@@ -483,8 +500,10 @@ static void init_thread(struct thread* t, const char* name, int priority) {
   t->status = THREAD_BLOCKED;
   strlcpy(t->name, name, sizeof t->name);
   t->stack = (uint8_t*)t + PGSIZE;
+  t->base_priority = priority;
   t->priority = priority;
   list_init(&t->held_locks);
+  t->waiting_for_lock = NULL;
   t->pcb = NULL;
   t->user_control = NULL;
   t->magic = THREAD_MAGIC;
@@ -522,11 +541,11 @@ struct thread* thread_get_most_important(struct list* lst, int* max_priority) {
 
   while(e != list_end(lst)) {
     struct thread* patient_boi = list_entry(e, struct thread, elem);
-    int patient_priority = thread_get_priority_ext(patient_boi);
+    //thread_update_priority(patient_boi);
 
-    if(important_boi == NULL || *max_priority < patient_priority) {
+    if(important_boi == NULL || *max_priority < patient_boi->priority) {
       important_boi = patient_boi;
-      *max_priority = patient_priority;
+      *max_priority = patient_boi->priority;
     }
 
     e = list_next(e);
