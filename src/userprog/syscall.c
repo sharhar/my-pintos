@@ -394,6 +394,10 @@ static void syscall_sema_up(uint32_t* args, uint32_t* f_eax) {
   *f_eax = (uint32_t)false;
 }
 
+static void syscall_get_tid(uint32_t* args, uint32_t* f_eax) {
+  *f_eax = (uint32_t)thread_tid();
+}
+
 static void syscall_handler(struct intr_frame* f) {
   thread_current()->in_syscall = true;
 
@@ -423,6 +427,7 @@ static void syscall_handler(struct intr_frame* f) {
     SYSCALL_ENTRY(SYS_SEMA_INIT, syscall_sema_init, 2)
     SYSCALL_ENTRY(SYS_SEMA_UP, syscall_sema_up, 1)
     SYSCALL_ENTRY(SYS_SEMA_DOWN, syscall_sema_down, 1)
+    SYSCALL_ENTRY(SYS_GET_TID, syscall_get_tid, 0);
   }
 
   thread_current()->in_syscall = false;
