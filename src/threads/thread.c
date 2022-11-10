@@ -215,7 +215,7 @@ struct thread* thread_create(const char* name, int priority, thread_func* functi
   /* Add to run queue. */
   thread_unblock(t);
 
-  if(priority > thread_get_priority())
+  if(active_sched_policy == SCHED_PRIO && priority > thread_get_priority())
     thread_yield();
 
   return t;
@@ -370,6 +370,7 @@ void thread_update_priority(struct thread* t) {
     struct list_elem* e2 = list_begin(&lck->semaphore.waiters);
     while(e2 != list_end(&lck->semaphore.waiters)) {
       struct thread* wait_thread = list_entry(e2, struct thread, elem);
+      printf("TTT = %p\n", wait_thread);
       //thread_update_priority(wait_thread);
       int wait_priority = wait_thread->priority;
 
