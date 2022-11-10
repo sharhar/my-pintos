@@ -104,6 +104,26 @@ static struct user_semaphore* get_sema_from_id(sema_t id) {
   return NULL;
 }
 
+static struct user_thread* get_thread_from_id(tid_t id) {
+  struct process* pcb = thread_current()->pcb;
+
+  lock_acquire(&pcb->threads_lock);
+
+  struct list_elem* e = list_begin(&pcb->user_threads);
+  while (e != list_end(&pcb->user_threads)) {
+    struct user_thread* actual_thread = list_entry(e, struct user_thread, elem);
+    if (actual_thread->tid == id) {
+      lock_release(&pcb->threads_lock);
+      return actual_thread;
+    }
+    e = list_next(e);
+  }
+
+  lock_release(&pcb->threads_lock);
+
+  return NULL;
+}
+
 static void syscall_exit(int32_t* args, int32_t* f_eax) {
   *f_eax = args[1];
   process_exit(args[1]);
@@ -405,15 +425,26 @@ static void syscall_pthread_create(uint32_t* args, uint32_t* f_eax) {
 
 static void syscall_pthread_join(uint32_t* args, uint32_t* f_eax) {
   tid_t tid = (tid_t)args[1];
-  *f_eax = (uint32_t)pthread_join(tid);
+
+  struct user_thread* uthread = get_thread_from_id(tid);
+
+  if(uthread == NULL) {
+    *f_eax = (uint32_t) TID_ERROR;
+    return;
+  }
+
+  pthread_join(uthread);
+  *f_eax = (uint32_t)uthread->tid;
 }
 
 static void syscall_pthread_exit(uint32_t* args, uint32_t* f_eax) {
-  if (thread_current() == thread_current()->pcb->main_thread) { // Main thread
+  if (thread_current() == thread_current()->pcb->main_thread) {
+    pthread_join_all();
     process_exit(0);
-  } else {
-    pthread_exit();
   }
+  
+  pthread_cleanup();
+  thread_exit();
 }
 
 static void syscall_handler(struct intr_frame* f) {

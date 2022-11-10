@@ -37,6 +37,7 @@ struct process_file {
 
 struct user_thread {
   tid_t tid;
+  struct thread* t;
   void* user_stack;
   struct lock lock;
   bool exiting;
@@ -53,16 +54,6 @@ struct user_semaphore {
   sema_t id;
   struct semaphore sema;
   struct list_elem elem;
-};
-
-struct user_thread_init_info {
-  struct process* pcb;
-  stub_fun sfun;
-  pthread_fun tfun;
-  const void* arg;
-  bool success;
-  void* user_stack;
-  struct semaphore sema;
 };
 
 struct process_heap_page {
@@ -118,8 +109,8 @@ pid_t get_pid(struct process*);
 void* process_heap_alloc(size_t size);
 
 tid_t pthread_execute(stub_fun, pthread_fun, void*);
-tid_t pthread_join(tid_t);
-void pthread_exit(void);
-void pthread_exit_main(void);
+void pthread_join(struct user_thread* uthread);
+void pthread_join_all();
+void pthread_cleanup(void);
 
 #endif /* userprog/process.h */
