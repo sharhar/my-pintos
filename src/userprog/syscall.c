@@ -410,7 +410,7 @@ static void syscall_pthread_join(uint32_t* args, uint32_t* f_eax) {
 
 static void syscall_pthread_exit(uint32_t* args, uint32_t* f_eax) {
   if (thread_current() == thread_current()->pcb->main_thread) { // Main thread
-    pthread_exit_main();
+    process_exit(0);
   } else {
     pthread_exit();
   }
