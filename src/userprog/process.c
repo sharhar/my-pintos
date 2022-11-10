@@ -290,6 +290,7 @@ int process_wait(pid_t child_pid) {
 
   lock_release(&pcb->children_lock);
 
+  /*
   lock_acquire(&pcb->locks_lock);
 
   e = list_begin(&pcb->user_locks);
@@ -301,6 +302,7 @@ int process_wait(pid_t child_pid) {
   }
 
   lock_release(&pcb->locks_lock);
+  */
 
   int return_code = -1;
 
@@ -1063,6 +1065,7 @@ static void start_pthread(void* exec_) {
    This function will be implemented in Project 2: Multithreading. For
    now, it does nothing. */
 void pthread_join(struct user_thread* uthread) {
+  /*
   struct process* pcb = thread_current()->pcb;
   ASSERT(uthread->t != thread_current());
   lock_acquire(&pcb->locks_lock);
@@ -1074,8 +1077,9 @@ void pthread_join(struct user_thread* uthread) {
       lock_release(&ulock->lock);
     e = list_next(e);
   }
-
   lock_release(&pcb->locks_lock);
+  */
+  
   lock_acquire(&uthread->lock);
   uthread->joined = true;
   lock_release(&uthread->lock);
@@ -1132,5 +1136,6 @@ void pthread_cleanup(void) {
 
   lock_release(&pcb->locks_lock);
 
-  lock_release(&uthread->lock);
+  if(lock_held_by_current_thread(&uthread->lock))
+    lock_release(&uthread->lock);
 }

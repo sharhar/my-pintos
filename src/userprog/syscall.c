@@ -440,11 +440,12 @@ static void syscall_pthread_join(uint32_t* args, uint32_t* f_eax) {
 
 static void syscall_pthread_exit(uint32_t* args, uint32_t* f_eax) {
   if (thread_current() == thread_current()->pcb->main_thread) {
+    lock_release(&thread_current()->user_control->lock);
     pthread_join_all();
     process_exit(0);
     NOT_REACHED();
   }
-  
+
   pthread_cleanup();
   thread_exit();
   NOT_REACHED();
