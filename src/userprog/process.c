@@ -216,6 +216,7 @@ static void start_process(void* _startInfo) {
   uthread->tid = thread_tid();
   uthread->t = thread_current();
   uthread->exiting = false;
+  uthread->joined = false;
   uthread->user_stack = pg_round_down(if_.esp);
   lock_init(&uthread->lock);
   thread_current()->user_control = uthread;
@@ -395,8 +396,10 @@ void process_exit(int exit_code) {
   e = list_begin(&pcb->user_threads);
   while(e != list_end(&pcb->user_threads)) {
     struct user_thread* uthread = list_entry(e, struct user_thread, elem);
-    lock_acquire(&uthread->lock);
-    lock_release(&uthread->lock);
+    if (uthread != NULL && uthread->t != thread_current() && !uthread->joined) {
+      lock_acquire(&uthread->lock);
+      lock_release(&uthread->lock);
+    }
     e = list_next(e);
   }
 
@@ -1000,6 +1003,7 @@ static void start_pthread(void* exec_) {
   uthread->tid = thread_tid();
   uthread->t = thread_current();
   uthread->exiting = false;
+  uthread->joined = false;
   uthread->user_stack = pg_round_down(if_.esp);
   lock_init(&uthread->lock);
   thread_current()->user_control = uthread;
@@ -1026,6 +1030,19 @@ static void start_pthread(void* exec_) {
    This function will be implemented in Project 2: Multithreading. For
    now, it does nothing. */
 void pthread_join(struct user_thread* uthread) {
+  struct process* pcb = thread_current()->pcb;
+  ASSERT(uthread->t != thread_current());
+  lock_acquire(&pcb->locks_lock);
+
+  struct list_elem* e = list_begin(&pcb->user_locks);
+  while(e != list_end(&pcb->user_locks)) {
+    struct user_lock* ulock = list_entry(e, struct user_lock, elem);
+    if(lock_held_by_current_thread(&ulock->lock))
+      lock_release(&ulock->lock);
+    e = list_next(e);
+  }
+
+  lock_release(&pcb->locks_lock);
   lock_acquire(&uthread->lock);
   lock_release(&uthread->lock);
 }
@@ -1083,5 +1100,4 @@ void pthread_cleanup(void) {
   lock_release(&pcb->locks_lock);
 
   lock_release(&uthread->lock);
-  thread_exit();
 }

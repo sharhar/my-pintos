@@ -402,6 +402,7 @@ void thread_update_priority(struct thread* t) {
     struct list_elem* e2 = list_begin(&lck->semaphore.waiters);
     while(e2 != list_end(&lck->semaphore.waiters)) {
       struct thread* wait_thread = list_entry(e2, struct thread, elem);
+      ASSERT((uint32_t)wait_thread % 16 == 0);
       int wait_priority = wait_thread->priority;
 
       if(wait_priority > max_priority)

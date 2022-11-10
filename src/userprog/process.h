@@ -41,6 +41,7 @@ struct user_thread {
   void* user_stack;
   struct lock lock;
   bool exiting;
+  bool joined;
   struct list_elem elem;
 };
 

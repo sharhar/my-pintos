@@ -428,12 +428,13 @@ static void syscall_pthread_join(uint32_t* args, uint32_t* f_eax) {
 
   struct user_thread* uthread = get_thread_from_id(tid);
 
-  if(uthread == NULL) {
+  if(uthread == NULL || uthread->t == thread_current() || uthread->joined) {
     *f_eax = (uint32_t) TID_ERROR;
     return;
   }
 
   pthread_join(uthread);
+  uthread->joined = true;
   *f_eax = (uint32_t)uthread->tid;
 }
 
