@@ -434,7 +434,7 @@ static void syscall_pthread_join(uint32_t* args, uint32_t* f_eax) {
   }
 
   pthread_join(uthread);
-  uthread->joined = true;
+  // uthread->joined = true;
   *f_eax = (uint32_t)uthread->tid;
 }
 
@@ -442,10 +442,12 @@ static void syscall_pthread_exit(uint32_t* args, uint32_t* f_eax) {
   if (thread_current() == thread_current()->pcb->main_thread) {
     pthread_join_all();
     process_exit(0);
+    NOT_REACHED();
   }
   
   pthread_cleanup();
   thread_exit();
+  NOT_REACHED();
 }
 
 static void syscall_handler(struct intr_frame* f) {

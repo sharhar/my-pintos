@@ -41,11 +41,32 @@ void userprog_init(void) {
      can come at any time and activate our pagedir */
   t->pcb = calloc(sizeof(struct process), 1);
   success = t->pcb != NULL;
+  if (success) {
+    lock_init(&t->pcb->children_lock);
+    list_init(&t->pcb->children);
+    list_init(&t->pcb->files);
 
-  lock_init(&t->pcb->children_lock);
-  list_init(&t->pcb->children);
-  list_init(&t->pcb->files);
+    // t->pcb->parental_control_block->reference_count = 2;
+    // t->pcb->parental_control_block->exit_code = -1;
+    // t->pcb->parental_control_block->pid = thread_tid();
+    
+    // lock_init(&t->pcb->parental_control_block->reference_lock);
+    // sema_init(&t->pcb->parental_control_block->sem, 0);
 
+    list_init(&t->pcb->heap_pages);
+    lock_init(&t->pcb->heap_lock);
+
+    lock_init(&t->pcb->threads_lock);
+    lock_init(&t->pcb->locks_lock);
+    lock_init(&t->pcb->semaphores_lock);
+
+    t->pcb->next_lock_ID = 0;
+    t->pcb->next_sema_ID = 0;
+
+    list_init(&t->pcb->user_threads);
+    list_init(&t->pcb->user_locks);
+    list_init(&t->pcb->user_semaphores);
+  }
   /* Kill the kernel if we did not succeed */
   ASSERT(success);
 }
@@ -268,6 +289,18 @@ int process_wait(pid_t child_pid) {
   }
 
   lock_release(&pcb->children_lock);
+
+  lock_acquire(&pcb->locks_lock);
+
+  e = list_begin(&pcb->user_locks);
+  while(e != list_end(&pcb->user_locks)) {
+    struct user_lock* ulock = list_entry(e, struct user_lock, elem);
+    if(lock_held_by_current_thread(&ulock->lock))
+      lock_release(&ulock->lock);
+    e = list_next(e);
+  }
+
+  lock_release(&pcb->locks_lock);
 
   int return_code = -1;
 
@@ -1044,6 +1077,7 @@ void pthread_join(struct user_thread* uthread) {
 
   lock_release(&pcb->locks_lock);
   lock_acquire(&uthread->lock);
+  uthread->joined = true;
   lock_release(&uthread->lock);
 }
 
@@ -1059,10 +1093,9 @@ void pthread_join_all() {
     e = list_next(e);
 
     lock_release(&pcb->threads_lock);
-
-    if (actual_thread->tid != my_tid)
+    if (actual_thread->tid != my_tid && !actual_thread->joined) {
       pthread_join(actual_thread);
-
+    }
     lock_acquire(&pcb->threads_lock);
   }
 

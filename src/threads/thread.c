@@ -328,7 +328,7 @@ void thread_exit(void) {
     thread_priority_trickle_up_helper(t->waiting_for_lock->holder);
     t->waiting_for_lock = NULL;
   }
-
+  
   list_remove(&t->allelem);
 
   in_exit = false;
@@ -422,8 +422,12 @@ static void thread_priority_trickle_up_helper(struct thread* t) {
 
   thread_update_priority(t);
 
-  if(t->waiting_for_lock != NULL)
+  if(t->waiting_for_lock != NULL) {
+    if (t->waiting_for_lock->holder != NULL && t->waiting_for_lock->holder->waiting_for_lock != NULL) {
+      ASSERT(t != t->waiting_for_lock->holder->waiting_for_lock->holder);
+    }
     thread_priority_trickle_up_helper(t->waiting_for_lock->holder);
+  }
 }
 
 void thread_priority_trickle_up(void) {
