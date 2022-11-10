@@ -373,7 +373,7 @@ void process_exit(int exit_code) {
   while(e != list_end(&cur->pcb->user_threads)) {
     struct user_thread* uthread = list_entry(e, struct user_thread, elem);
 
-    if(uthread->t != cur && !uthread->exiting) {
+    if(uthread->tid != cur->tid && !uthread->exiting) {
       thread_stack_frame_push(uthread->t, thread_exit);
       thread_stack_frame_push(uthread->t, pthread_cleanup);
 
@@ -947,6 +947,9 @@ struct user_thread_init_info {
    This function will be implemented in Project 2: Multithreading and
    should be similar to process_execute (). For now, it does nothing.
    */
+
+static char test = 0;
+
 tid_t pthread_execute(stub_fun sf, pthread_fun tf, void* arg) {
   struct user_thread_init_info info;
   info.pcb = thread_current()->pcb;
@@ -956,8 +959,15 @@ tid_t pthread_execute(stub_fun sf, pthread_fun tf, void* arg) {
   info.tid = TID_ERROR;
   sema_init(&info.sema, 0);
 
-  thread_create("asdf", PRI_DEFAULT, start_pthread, &info);
+  char my_name[3];
+  my_name[0] = 't';
+  my_name[1] = test + '0';
+  my_name[2] = 0;
+
+  thread_create(my_name, PRI_DEFAULT, start_pthread, &info);
   sema_down(&info.sema);
+
+  test++;
 
   return info.tid;
 }
@@ -986,7 +996,7 @@ static void start_pthread(void* exec_) {
     thread_exit();
   }
 
-  struct user_thread* uthread = process_heap_alloc(sizeof(uthread));
+  struct user_thread* uthread = process_heap_alloc(sizeof(struct user_thread));
   uthread->tid = thread_tid();
   uthread->t = thread_current();
   uthread->exiting = false;
