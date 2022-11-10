@@ -105,24 +105,35 @@ void sema_up(struct semaphore* sema) {
   old_level = intr_disable();
   sema->value++;
 
-  if(active_sched_policy == SCHED_PRIO) {
-    int max_priority;
-    struct thread* important_boi = thread_get_most_important(&sema->waiters, &max_priority);
+  int max_priority;
+  struct thread* to_be_unblocked = NULL;
 
-    if(important_boi != NULL) {
-      list_remove(&important_boi->elem);
-      thread_unblock(important_boi);
-      if(max_priority > thread_get_priority()) {
-        if(!intr_context())
-          thread_yield();
-        else
-          intr_yield_on_return();
-      }
-    }
+  if(active_sched_policy == SCHED_PRIO) {
+    to_be_unblocked = thread_get_most_important(&sema->waiters, &max_priority);
   } else {
-    if(!list_empty(&sema->waiters))
-      thread_unblock(list_entry(list_pop_front(&sema->waiters), struct thread, elem));
+    max_priority = PRI_MIN;
+
+    to_be_unblocked = list_begin(&sema->waiters);
+    if(to_be_unblocked == list_end(&sema->waiters)) {
+      to_be_unblocked = NULL;
+    } else {
+      to_be_unblocked = list_entry((struct list_elem*)to_be_unblocked, struct thread, elem);
+    }
   }
+
+  if(to_be_unblocked != NULL) {
+    list_remove(&to_be_unblocked->elem);
+    to_be_unblocked->waiting_for_lock = NULL;
+    thread_unblock(to_be_unblocked);
+
+    if(!thread_in_exit() && max_priority > thread_get_priority()) {
+      if(!intr_context())
+        thread_yield();
+      else
+        intr_yield_on_return();
+    }
+  }
+  
 
   intr_set_level(old_level);
 }

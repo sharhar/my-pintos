@@ -28,6 +28,8 @@ static struct list fifo_ready_list;
    when they are first scheduled and removed when they exit. */
 static struct list all_list;
 
+static bool in_exit;
+
 /* Idle thread. */
 static struct thread* idle_thread;
 
@@ -60,6 +62,8 @@ static void schedule(void);
 static void thread_enqueue(struct thread* t);
 static tid_t allocate_tid(void);
 void thread_switch_tail(struct thread* prev);
+
+static void thread_priority_trickle_up_helper(struct thread* t);
 
 static void kernel_thread(thread_func*, void* aux);
 static void idle(void* aux);
@@ -109,6 +113,8 @@ void thread_init(void) {
   lock_init(&tid_lock);
   list_init(&fifo_ready_list);
   list_init(&all_list);
+
+  in_exit = false;
 
   /* Set up a thread structure for the running thread. */
   initial_thread = running_thread();
@@ -292,6 +298,11 @@ struct thread* thread_current(void) {
 /* Returns the running thread's tid. */
 tid_t thread_tid(void) { return thread_current()->tid; }
 
+bool thread_in_exit(void) {
+  ASSERT(intr_get_level() == INTR_OFF);
+  return in_exit;
+}
+
 /* Deschedules the current thread and destroys it.  Never
    returns to the caller. */
 void thread_exit(void) {
@@ -301,8 +312,27 @@ void thread_exit(void) {
      and schedule another process.  That process will destroy us
      when it calls thread_switch_tail(). */
   intr_disable();
-  list_remove(&thread_current()->allelem);
-  thread_current()->status = THREAD_DYING;
+
+  struct thread* t = thread_current();
+
+  in_exit = true;
+
+  struct list_elem* e = list_begin(&t->held_locks);
+  while(e != list_end(&t->held_locks)) {
+    lock_release(list_entry(e, struct lock, elem));
+    e = list_next(e);
+  }
+
+  if(t->waiting_for_lock != NULL) {
+    list_remove(&t->elem);
+    thread_priority_trickle_up_helper(t->waiting_for_lock->holder);
+    t->waiting_for_lock = NULL;
+  }
+
+  list_remove(&t->allelem);
+
+  in_exit = false;
+  t->status = THREAD_DYING;
   schedule();
   NOT_REACHED();
 }
@@ -361,6 +391,8 @@ void thread_set_priority(int new_priority) {
 void thread_update_priority(struct thread* t) {
   ASSERT(intr_get_level() == INTR_OFF);
 
+  if(thread_in_exit()) return;
+
   int max_priority = t->base_priority;
 
   struct list_elem* e = list_begin(&t->held_locks);
@@ -370,8 +402,6 @@ void thread_update_priority(struct thread* t) {
     struct list_elem* e2 = list_begin(&lck->semaphore.waiters);
     while(e2 != list_end(&lck->semaphore.waiters)) {
       struct thread* wait_thread = list_entry(e2, struct thread, elem);
-      //printf("TTT = %p\n", wait_thread);
-      //thread_update_priority(wait_thread);
       int wait_priority = wait_thread->priority;
 
       if(wait_priority > max_priority)
@@ -542,7 +572,6 @@ struct thread* thread_get_most_important(struct list* lst, int* max_priority) {
 
   while(e != list_end(lst)) {
     struct thread* patient_boi = list_entry(e, struct thread, elem);
-    //thread_update_priority(patient_boi);
 
     if(important_boi == NULL || *max_priority < patient_boi->priority) {
       important_boi = patient_boi;
