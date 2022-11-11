@@ -433,8 +433,10 @@ static void syscall_pthread_join(uint32_t* args, uint32_t* f_eax) {
     return;
   }
 
-  pthread_join(uthread);
-  // uthread->joined = true;
+  lock_acquire(&uthread->lock);
+  uthread->joined = true;
+  lock_release(&uthread->lock);
+  
   *f_eax = (uint32_t)uthread->tid;
 }
 
@@ -446,8 +448,7 @@ static void syscall_pthread_exit(uint32_t* args, uint32_t* f_eax) {
     NOT_REACHED();
   }
 
-  pthread_cleanup();
-  thread_exit();
+  pthread_exit();
   NOT_REACHED();
 }
 

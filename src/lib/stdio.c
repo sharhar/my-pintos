@@ -1,4 +1,4 @@
-#include <stdio.h>
+#include <lib/stdio.h>
 #include <ctype.h>
 #include <inttypes.h>
 #include <round.h>

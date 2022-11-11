@@ -63,7 +63,8 @@ void sema_down(struct semaphore* sema) {
   
   while (sema->value == 0) {
     list_push_back(&sema->waiters, &thread_current()->elem);
-    thread_priority_trickle_up();
+    if(active_sched_policy == SCHED_PRIO)
+      thread_priority_trickle_up();
     thread_block();
   }
   sema->value--;
@@ -103,6 +104,7 @@ void sema_up(struct semaphore* sema) {
   ASSERT(sema != NULL);
 
   old_level = intr_disable();
+  
   sema->value++;
 
   int max_priority;
@@ -126,14 +128,13 @@ void sema_up(struct semaphore* sema) {
     to_be_unblocked->waiting_for_lock = NULL;
     thread_unblock(to_be_unblocked);
 
-    if(!thread_in_exit() && max_priority > thread_get_priority()) {
+    if(active_sched_policy == SCHED_PRIO && !thread_in_exit() && max_priority > thread_get_priority()) {
       if(!intr_context())
         thread_yield();
       else
         intr_yield_on_return();
     }
   }
-  
 
   intr_set_level(old_level);
 }
@@ -187,8 +188,6 @@ static void sema_test_helper(void* sema_) {
 void lock_init(struct lock* lock) {
   ASSERT(lock != NULL);
 
-  if(lock == 0xc010b024) PANIC("debug");
-
   lock->holder = NULL;
   sema_init(&lock->semaphore, 1);
 }
@@ -207,12 +206,17 @@ void lock_acquire(struct lock* lock) {
   ASSERT(!lock_held_by_current_thread(lock));
 
   enum intr_level old_level = intr_disable();
+
   thread_current()->waiting_for_lock = lock;
   sema_down(&lock->semaphore);
   thread_current()->waiting_for_lock = NULL;
+
   lock->holder = thread_current();
   list_push_back(&thread_current()->held_locks, &lock->elem);
-  thread_update_priority(thread_current());
+
+  if(active_sched_policy == SCHED_PRIO)
+    thread_update_priority(thread_current());
+
   intr_set_level(old_level);
 }
 
@@ -233,7 +237,9 @@ bool lock_try_acquire(struct lock* lock) {
   if (success) {
     lock->holder = thread_current();
     list_push_back(&thread_current()->held_locks, &lock->elem);
-    thread_update_priority(thread_current());
+
+    if(active_sched_policy == SCHED_PRIO)
+      thread_update_priority(thread_current());
   }
   intr_set_level(old_level);
   return success;
@@ -249,11 +255,25 @@ void lock_release(struct lock* lock) {
   ASSERT(lock_held_by_current_thread(lock));
 
   enum intr_level old_level = intr_disable();
+  
   lock->holder = NULL;
-  list_remove(&lock->elem);  
-  thread_update_priority(thread_current());
+  list_remove(&lock->elem);
+
+  if(active_sched_policy == SCHED_PRIO)
+    thread_update_priority(thread_current());
+
   sema_up(&lock->semaphore);
   intr_set_level(old_level);
+}
+
+// Release a lock held by another thread
+void lock_release_ext(struct lock* lock) {
+  ASSERT(lock != NULL);
+  ASSERT(intr_get_level() == INTR_OFF);
+
+  lock->holder = NULL;
+  list_remove(&lock->elem);
+  sema_up(&lock->semaphore);
 }
 
 /* Returns true if the current thread holds LOCK, false

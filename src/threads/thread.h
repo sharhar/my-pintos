@@ -91,6 +91,8 @@ struct thread {
   int base_priority;         /* Base Priority. */
   struct list_elem allelem;  /* List element for all threads list. */
 
+  bool killed;
+
   /* Shared between thread.c and synch.c. */
   struct list_elem elem; /* List element. */
 
@@ -165,5 +167,7 @@ int thread_get_nice(void);
 void thread_set_nice(int);
 int thread_get_recent_cpu(void);
 int thread_get_load_avg(void);
+
+void thread_kill(struct thread* t);
 
 #endif /* threads/thread.h */

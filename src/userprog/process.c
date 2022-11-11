@@ -2,7 +2,7 @@
 #include <debug.h>
 #include <inttypes.h>
 #include <round.h>
-#include <stdio.h>
+#include "lib/stdio.h"
 #include <stdlib.h>
 #include <string.h>
 #include "userprog/syscall.h"
@@ -20,6 +20,7 @@
 #include "threads/synch.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
+#include <lib/kernel/console.h>
 
 static thread_func start_process NO_RETURN;
 static thread_func start_pthread NO_RETURN;
@@ -236,7 +237,6 @@ static void start_process(void* _startInfo) {
   struct user_thread* uthread = process_heap_alloc(sizeof(struct user_thread));
   uthread->tid = thread_tid();
   uthread->t = thread_current();
-  uthread->exiting = false;
   uthread->joined = false;
   uthread->user_stack = pg_round_down(if_.esp);
   lock_init(&uthread->lock);
@@ -289,20 +289,6 @@ int process_wait(pid_t child_pid) {
   }
 
   lock_release(&pcb->children_lock);
-
-  /*
-  lock_acquire(&pcb->locks_lock);
-
-  e = list_begin(&pcb->user_locks);
-  while(e != list_end(&pcb->user_locks)) {
-    struct user_lock* ulock = list_entry(e, struct user_lock, elem);
-    if(lock_held_by_current_thread(&ulock->lock))
-      lock_release(&ulock->lock);
-    e = list_next(e);
-  }
-
-  lock_release(&pcb->locks_lock);
-  */
 
   int return_code = -1;
 
@@ -409,56 +395,25 @@ void process_exit(int exit_code) {
   while(e != list_end(&cur->pcb->user_threads)) {
     struct user_thread* uthread = list_entry(e, struct user_thread, elem);
 
-    if(uthread->tid != cur->tid && !uthread->exiting) {
-      thread_stack_frame_push(uthread->t, thread_exit);
-      thread_stack_frame_push(uthread->t, pthread_cleanup);
-
-      //printf("STACK = %p\n", uthread->t->stack);
-
-      if(uthread->t->status == THREAD_BLOCKED) {
-        if(uthread->t->waiting_for_lock != NULL) {
-          list_remove(&uthread->t->elem);
-          uthread->t->waiting_for_lock = NULL;
-          //thread_update_priority(uthread->t);
-        }
-
-        thread_unblock(uthread->t);
-      }
-    }
+    if(uthread->tid != cur->tid && uthread->t != NULL)
+      thread_kill(uthread->t);
 
     e = list_next(e);
   }
 
   intr_set_level(old_level);
 
-  pthread_cleanup();
-
   struct process* pcb = cur->pcb;
   cur->pcb = NULL;
 
-  //printf("BEFORE = %p\n", ((struct list_elem*)0xc010b02c)->next);
-  
-  //Join on all threads
-  e = list_begin(&pcb->user_threads);
-  while(e != list_end(&pcb->user_threads)) {
-    struct user_thread* uthread = list_entry(e, struct user_thread, elem);
-    if (uthread != NULL && uthread->t != thread_current() && !uthread->joined) {
-      lock_acquire(&uthread->lock);
-      lock_release(&uthread->lock);
-    }
-    e = list_next(e);
-  }
-
-  //printf("AFTER = %p\n", ((struct list_elem*)0xc010b02c)->next);
-
   if(pcb->parental_control_block != NULL)
     pcb->parental_control_block->exit_code = exit_code;
-  
+
   printf("%s: exit(%d)\n", pcb->process_name, exit_code);
 
   free_process_children(pcb);
   close_process_files(pcb);
-
+  
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
   pd = pcb->pagedir;
@@ -474,7 +429,7 @@ void process_exit(int exit_code) {
     pagedir_activate(NULL);
     pagedir_destroy(pd);
   }
-  
+
   // Free all the pages of the process
   ASSERT(list_size(&pcb->heap_pages) > 0);
   ASSERT(pg_round_down(list_end(&pcb->heap_pages)->prev) == pcb);
@@ -1050,7 +1005,6 @@ static void start_pthread(void* exec_) {
   struct user_thread* uthread = process_heap_alloc(sizeof(struct user_thread));
   uthread->tid = thread_tid();
   uthread->t = thread_current();
-  uthread->exiting = false;
   uthread->joined = false;
   uthread->user_stack = pg_round_down(if_.esp);
   lock_init(&uthread->lock);
@@ -1070,34 +1024,6 @@ static void start_pthread(void* exec_) {
   NOT_REACHED();
 }
 
-/* Waits for thread with TID to die, if that thread was spawned
-   in the same process and has not been waited on yet. Returns TID on
-   success and returns TID_ERROR on failure immediately, without
-   waiting.
-
-   This function will be implemented in Project 2: Multithreading. For
-   now, it does nothing. */
-void pthread_join(struct user_thread* uthread) {
-  /*
-  struct process* pcb = thread_current()->pcb;
-  ASSERT(uthread->t != thread_current());
-  lock_acquire(&pcb->locks_lock);
-
-  struct list_elem* e = list_begin(&pcb->user_locks);
-  while(e != list_end(&pcb->user_locks)) {
-    struct user_lock* ulock = list_entry(e, struct user_lock, elem);
-    if(lock_held_by_current_thread(&ulock->lock))
-      lock_release(&ulock->lock);
-    e = list_next(e);
-  }
-  lock_release(&pcb->locks_lock);
-  */
-  
-  lock_acquire(&uthread->lock);
-  uthread->joined = true;
-  lock_release(&uthread->lock);
-}
-
 void pthread_join_all() {
   struct process* pcb = thread_current()->pcb;
   tid_t my_tid = thread_tid();
@@ -1110,9 +1036,8 @@ void pthread_join_all() {
     e = list_next(e);
 
     lock_release(&pcb->threads_lock);
-    if (actual_thread->tid != my_tid && !actual_thread->joined) {
-      pthread_join(actual_thread);
-    }
+    lock_acquire(&actual_thread->lock);
+    lock_release(&actual_thread->lock);
     lock_acquire(&pcb->threads_lock);
   }
 
@@ -1124,14 +1049,12 @@ void pthread_join_all() {
 /* Free the current thread's resources. Most resources will
    be freed on thread_exit(), so all we have to do is deallocate the
    thread's userspace stack. Wake any waiters on this thread. */
-void pthread_cleanup(void) {
+void pthread_exit(void) {
   struct user_thread* uthread = thread_current()->user_control;
   if(uthread == NULL) return;
-  uthread->exiting = true;
 
-  //printf("CHECK = %p\n", ((struct list_elem*)0xc010b02c)->next);
+  intr_disable();
 
-  enum intr_level old_level = intr_disable();
   thread_set_exit(true);
 
   struct thread* t = thread_current();
@@ -1148,6 +1071,9 @@ void pthread_cleanup(void) {
     lock_release(lck);
   }
 
+  t->pcb = NULL;
+  uthread->t = NULL;
+
   thread_set_exit(false);
-  intr_set_level(old_level);
+  thread_exit();
 }

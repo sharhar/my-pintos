@@ -40,7 +40,6 @@ struct user_thread {
   struct thread* t;
   void* user_stack;
   struct lock lock;
-  bool exiting;
   bool joined;
   struct list_elem elem;
 };
@@ -110,8 +109,7 @@ pid_t get_pid(struct process*);
 void* process_heap_alloc(size_t size);
 
 tid_t pthread_execute(stub_fun, pthread_fun, void*);
-void pthread_join(struct user_thread* uthread);
 void pthread_join_all();
-void pthread_cleanup(void);
+void pthread_exit(void);
 
 #endif /* userprog/process.h */

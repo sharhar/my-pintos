@@ -59,7 +59,7 @@ static void init_thread(struct thread*, const char* name, int priority);
 static bool is_thread(struct thread*) UNUSED;
 static void* alloc_frame(struct thread*, size_t size);
 static void schedule(void);
-static void thread_enqueue(struct thread* t);
+
 static tid_t allocate_tid(void);
 void thread_switch_tail(struct thread* prev);
 
@@ -245,7 +245,7 @@ void thread_block(void) {
    current active scheduling policy.
    
    This function must be called with interrupts turned off. */
-static void thread_enqueue(struct thread* t) {
+void thread_enqueue(struct thread* t) {
   ASSERT(intr_get_level() == INTR_OFF);
   ASSERT(is_thread(t));
 
@@ -308,6 +308,19 @@ bool thread_in_exit(void) {
   return in_exit;
 }
 
+void thread_kill(struct thread* t) {
+  ASSERT(intr_get_level() == INTR_OFF);
+
+  // If the thread was waiting for a lock, we need to remove it from the waiters list
+  if(t->elem.next != NULL || t->elem.prev != NULL)
+      list_remove(&t->elem);
+
+  t->waiting_for_lock = NULL;
+  t->status = THREAD_READY;
+  t->killed = true;
+  thread_enqueue(t);
+}
+
 /* Deschedules the current thread and destroys it.  Never
    returns to the caller. */
 void thread_exit(void) {
@@ -362,6 +375,8 @@ void thread_set_priority(int new_priority) {
   // Update priority
   thread_current()->base_priority = new_priority;
   thread_update_priority(thread_current());
+
+  if(active_sched_policy != SCHED_PRIO) return;
   
   int max_priority;
   thread_get_most_important(&fifo_ready_list, &max_priority);
@@ -382,7 +397,9 @@ void thread_update_priority(struct thread* t) {
 
   if(thread_in_exit()) return;
 
-  int max_priority = t->base_priority;
+  t->priority = t->base_priority;
+
+  if(active_sched_policy != SCHED_PRIO) return;
 
   struct list_elem* e = list_begin(&t->held_locks);
   while(e != list_end(&t->held_locks)) {
@@ -396,20 +413,20 @@ void thread_update_priority(struct thread* t) {
 
       int wait_priority = wait_thread->priority;
 
-      if(wait_priority > max_priority)
-        max_priority = wait_priority;
+      if(wait_priority > t->priority)
+        t->priority = wait_priority;
 
       e2 = list_next(e2);
     }
     
     e = list_next(e);
   }
-
-  t->priority = max_priority;
 }
 
 static void thread_priority_trickle_up_helper(struct thread* t) {
   ASSERT(intr_get_level() == INTR_OFF);
+
+  if(active_sched_policy != SCHED_PRIO) return;
 
   thread_update_priority(t);
 
@@ -423,6 +440,8 @@ static void thread_priority_trickle_up_helper(struct thread* t) {
 
 void thread_priority_trickle_up(void) {
   struct thread* t = thread_current();
+
+  if(active_sched_policy != SCHED_PRIO) return;
 
   if(t->waiting_for_lock != NULL)
     thread_priority_trickle_up_helper(t);
@@ -531,6 +550,7 @@ static void init_thread(struct thread* t, const char* name, int priority) {
   t->priority = priority;
   list_init(&t->held_locks);
   t->waiting_for_lock = NULL;
+  t->killed = false;
   t->pcb = NULL;
   t->user_control = NULL;
   t->magic = THREAD_MAGIC;
@@ -644,11 +664,6 @@ void thread_switch_tail(struct thread* prev) {
   /* Start new time slice. */
   thread_ticks = 0;
 
-#ifdef USERPROG
-  /* Activate the new address space. */
-  process_activate();
-#endif
-
   /* If the thread we switched from is dying, destroy its struct
      thread.  This must happen late so that thread_exit() doesn't
      pull out the rug under itself.  (We don't free
@@ -658,6 +673,14 @@ void thread_switch_tail(struct thread* prev) {
     ASSERT(prev != cur);
     palloc_free_page(prev);
   }
+
+  if(cur->killed)
+    thread_exit();
+
+  #ifdef USERPROG
+  /* Activate the new address space. */
+  process_activate();
+  #endif
 }
 
 void thread_stack_frame_push(struct thread* t, void* func_ptr) {
