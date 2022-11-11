@@ -403,6 +403,8 @@ void process_exit(int exit_code) {
     NOT_REACHED();
   }
 
+  printf("EXIT = %p\n", ((struct list_elem*)0xc010b02c)->next);
+
   enum intr_level old_level = intr_disable();
 
   struct list_elem* e = list_begin(&cur->pcb->user_threads);
@@ -413,8 +415,17 @@ void process_exit(int exit_code) {
       thread_stack_frame_push(uthread->t, thread_exit);
       thread_stack_frame_push(uthread->t, pthread_cleanup);
 
-      if(uthread->t->status == THREAD_BLOCKED)
+      //printf("STACK = %p\n", uthread->t->stack);
+
+      if(uthread->t->status == THREAD_BLOCKED) {
+        if(uthread->t->waiting_for_lock != NULL) {
+          list_remove(&uthread->t->elem);
+          uthread->t->waiting_for_lock = NULL;
+          //thread_update_priority(uthread->t);
+        }
+
         thread_unblock(uthread->t);
+      }
     }
 
     e = list_next(e);
@@ -426,6 +437,8 @@ void process_exit(int exit_code) {
 
   struct process* pcb = cur->pcb;
   cur->pcb = NULL;
+
+  //printf("BEFORE = %p\n", ((struct list_elem*)0xc010b02c)->next);
   
   //Join on all threads
   e = list_begin(&pcb->user_threads);
@@ -437,6 +450,8 @@ void process_exit(int exit_code) {
     }
     e = list_next(e);
   }
+
+  //printf("AFTER = %p\n", ((struct list_elem*)0xc010b02c)->next);
 
   if(pcb->parental_control_block != NULL)
     pcb->parental_control_block->exit_code = exit_code;
@@ -1065,6 +1080,8 @@ static void start_pthread(void* exec_) {
    This function will be implemented in Project 2: Multithreading. For
    now, it does nothing. */
 void pthread_join(struct user_thread* uthread) {
+  printf("CHECK = %p\n", ((struct list_elem*)0xc010b02c)->next);
+
   /*
   struct process* pcb = thread_current()->pcb;
   ASSERT(uthread->t != thread_current());
@@ -1116,6 +1133,8 @@ void pthread_cleanup(void) {
   if(uthread == NULL) return;
   uthread->exiting = true;
   barrier();
+
+  //printf("CHECK = %p\n", ((struct list_elem*)0xc010b02c)->next);
 
   struct process* pcb = thread_current()->pcb;
 

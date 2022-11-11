@@ -216,7 +216,11 @@ struct list_elem* list_remove(struct list_elem* elem) {
   ASSERT(is_interior(elem));
   elem->prev->next = elem->next;
   elem->next->prev = elem->prev;
-  return elem->next;
+
+  struct list_elem* return_val = elem->next;
+  elem->next = NULL;
+  elem->prev = NULL;
+  return return_val;
 }
 
 /* Removes the front element from LIST and returns it.
