@@ -403,8 +403,6 @@ void process_exit(int exit_code) {
     NOT_REACHED();
   }
 
-  printf("EXIT = %p\n", ((struct list_elem*)0xc010b02c)->next);
-
   enum intr_level old_level = intr_disable();
 
   struct list_elem* e = list_begin(&cur->pcb->user_threads);
@@ -1080,8 +1078,6 @@ static void start_pthread(void* exec_) {
    This function will be implemented in Project 2: Multithreading. For
    now, it does nothing. */
 void pthread_join(struct user_thread* uthread) {
-  printf("CHECK = %p\n", ((struct list_elem*)0xc010b02c)->next);
-
   /*
   struct process* pcb = thread_current()->pcb;
   ASSERT(uthread->t != thread_current());
@@ -1132,29 +1128,26 @@ void pthread_cleanup(void) {
   struct user_thread* uthread = thread_current()->user_control;
   if(uthread == NULL) return;
   uthread->exiting = true;
-  barrier();
 
   //printf("CHECK = %p\n", ((struct list_elem*)0xc010b02c)->next);
 
-  struct process* pcb = thread_current()->pcb;
+  enum intr_level old_level = intr_disable();
+  thread_set_exit(true);
 
-  uint32_t stack_kpage = pagedir_get_page(pcb->pagedir, uthread->user_stack);
+  struct thread* t = thread_current();
+
+  uint32_t stack_kpage = pagedir_get_page(t->pcb->pagedir, uthread->user_stack);
   ASSERT(stack_kpage != NULL)
-  pagedir_clear_page(pcb->pagedir, uthread->user_stack);
+  pagedir_clear_page(t->pcb->pagedir, uthread->user_stack);
   palloc_free_page(stack_kpage);
 
-  lock_acquire(&pcb->locks_lock);
-
-  struct list_elem* e = list_begin(&pcb->user_locks);
-  while(e != list_end(&pcb->user_locks)) {
-    struct user_lock* ulock = list_entry(e, struct user_lock, elem);
-    if(lock_held_by_current_thread(&ulock->lock))
-      lock_release(&ulock->lock);
+  struct list_elem* e = list_begin(&t->held_locks);
+  while(e != list_end(&t->held_locks)) {
+    struct lock* lck = list_entry(e, struct lock, elem);
     e = list_next(e);
+    lock_release(lck);
   }
 
-  lock_release(&pcb->locks_lock);
-
-  if(lock_held_by_current_thread(&uthread->lock))
-    lock_release(&uthread->lock);
+  thread_set_exit(false);
+  intr_set_level(old_level);
 }

@@ -158,6 +158,7 @@ void thread_priority_trickle_up(void);
 // Searches through thread list and finds the most important thread
 struct thread* thread_get_most_important(struct list* lst, int* max_priority);
 
+void thread_set_exit(bool val);
 bool thread_in_exit(void);
 
 int thread_get_nice(void);

@@ -298,6 +298,11 @@ struct thread* thread_current(void) {
 /* Returns the running thread's tid. */
 tid_t thread_tid(void) { return thread_current()->tid; }
 
+void thread_set_exit(bool val) {
+  ASSERT(intr_get_level() == INTR_OFF);
+  in_exit = val;
+}
+
 bool thread_in_exit(void) {
   ASSERT(intr_get_level() == INTR_OFF);
   return in_exit;
@@ -315,23 +320,7 @@ void thread_exit(void) {
 
   struct thread* t = thread_current();
 
-  in_exit = true;
-
-  struct list_elem* e = list_begin(&t->held_locks);
-  while(e != list_end(&t->held_locks)) {
-    lock_release(list_entry(e, struct lock, elem));
-    e = list_next(e);
-  }
-
-  if(t->waiting_for_lock != NULL) {
-    list_remove(&t->elem);
-    thread_priority_trickle_up_helper(t->waiting_for_lock->holder);
-    t->waiting_for_lock = NULL;
-  }
-  
-  list_remove(&t->allelem);
-
-  in_exit = false;
+  list_remove(&t->allelem);  
   t->status = THREAD_DYING;
   schedule();
   NOT_REACHED();

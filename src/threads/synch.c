@@ -187,6 +187,8 @@ static void sema_test_helper(void* sema_) {
 void lock_init(struct lock* lock) {
   ASSERT(lock != NULL);
 
+  if(lock == 0xc010b024) PANIC("debug");
+
   lock->holder = NULL;
   sema_init(&lock->semaphore, 1);
 }
@@ -247,8 +249,8 @@ void lock_release(struct lock* lock) {
   ASSERT(lock_held_by_current_thread(lock));
 
   enum intr_level old_level = intr_disable();
-  list_remove(&lock->elem);
   lock->holder = NULL;
+  list_remove(&lock->elem);  
   thread_update_priority(thread_current());
   sema_up(&lock->semaphore);
   intr_set_level(old_level);
