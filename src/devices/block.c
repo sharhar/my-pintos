@@ -10,20 +10,27 @@
 #include "devices/ide.h"
 #include "threads/malloc.h"
 
-#define BUFFER_CACHE_SIZE 1
+#define BUFFER_CACHE_SIZE 64
 #define BUFFER_CACHE_PAGE_COUNT DIV_ROUND_UP(BUFFER_CACHE_SIZE * BLOCK_SECTOR_SIZE, PGSIZE)
 
 #define NO_SECTOR ((block_sector_t)-1)
 
 #define DIRTY_BIT  ((uint8_t)1)
 #define MAPPED_BIT ((uint8_t)2)
+#define USED_BIT   ((uint8_t)4)
 
+/* An entry in the buffer cache*/
 struct buffer_cache_entry {
-  struct block* block;
-  block_sector_t sector;
-  uint64_t last_used;
-  uint8_t flags;
-  struct condition cond;
+  struct block* block; // Physical block device where the data is stored
+  
+  /* Virtual device that mapped the sector (this will be different than 
+     the `block` device if we are using a block struct made by partition.c)*/
+  struct block* holder;
+
+  block_sector_t sector; // Sector where data is stored on physical device
+  uint64_t last_used;    // when was the entry last used
+  uint8_t flags;         // contains entry flags: dirty?, mapped?
+  struct condition cond; // conditional variable used for 
   uint8_t* data;
 };
 
@@ -50,16 +57,15 @@ static struct list all_blocks = LIST_INITIALIZER(all_blocks);
 static struct block* block_by_role[BLOCK_ROLE_CNT];
 
 static struct block* list_elem_to_block(struct list_elem*);
+static void flush_entry(struct block* block, block_sector_t sector, struct block* holder, void* data);
 
-static uint32_t next_block_device_id;
-static uint64_t usage_counter;
-static struct lock buffer_cache_lock;
-static struct condition buffer_cache_cond;
+static uint64_t usage_counter;              // counter for when blocks are accessed
+static struct lock buffer_cache_lock;       // global lock around buffer cache
+static struct condition buffer_cache_cond;  // conditional variable for cache entries being unmapped
 static uint8_t* buffer_cache_data;
 static struct buffer_cache_entry buffer_cache[BUFFER_CACHE_SIZE];
 
 void block_init(void) {
-  next_block_device_id = 1;
   usage_counter = 1;
   lock_init(&buffer_cache_lock);
   cond_init(&buffer_cache_cond);
@@ -68,6 +74,7 @@ void block_init(void) {
   for(int i = 0; i < BUFFER_CACHE_SIZE; i++) {
     cond_init(&buffer_cache[i].cond);
     buffer_cache[i].block = NULL;
+    buffer_cache[i].holder = NULL;
     buffer_cache[i].sector = NO_SECTOR;
     buffer_cache[i].last_used = 0;
     buffer_cache[i].flags = 0;
@@ -76,6 +83,12 @@ void block_init(void) {
 }
 
 void block_done(void) {
+  // Flush dirty cache entries to disk before shutdown
+  for(int i = 0; i < BUFFER_CACHE_SIZE; i++)
+    if(buffer_cache[i].block != NULL && buffer_cache[i].flags & DIRTY_BIT)
+      flush_entry(buffer_cache[i].block, buffer_cache[i].sector, 
+                  buffer_cache[i].holder, buffer_cache[i].data);
+
   palloc_free_multiple(buffer_cache_data, BUFFER_CACHE_PAGE_COUNT);
 }
 
@@ -141,83 +154,121 @@ static void check_sector(struct block* block, block_sector_t sector) {
   }
 }
 
-void* block_map_sector(struct block* block, block_sector_t sector, bool coherent) {
-  check_sector(block, sector);
+/* Searches for an available cache entry, returns only once
+   entry is ready to be used by the map function. Sets
+   MUST_EVICT to true if the returned entry must be evicted
+   before being used. Also sets both the used bit and mapped
+   bit in the entry (after waiting on any other threads)
+   using the entries first to ensure no concurrent access. */
+static struct buffer_cache_entry* select_entry(struct block* block, block_sector_t sector, bool* must_evict) {
+  uint64_t least_time = ((uint64_t)-1);
+  struct buffer_cache_entry* lru_entry = NULL;
 
-  if(!lock_held_by_current_thread(&buffer_cache_lock))
-    lock_acquire(&buffer_cache_lock);
-
-  void* result = NULL;
-  if(block->type != BLOCK_RAW) {
-    /* This block device does not point to a physical device, so we call
-       block_map_sector on the block device backing this one */
-    result = block_map_sector(block->provider, sector + ((uint64_t)block->aux), coherent);
-  } else {
-    /* This block device is backed by a physical device. */
-
-    // Search for the cache entry that will be used
-    uint64_t least_time = ((uint64_t)-1);
-    struct buffer_cache_entry* lru_entry = NULL;
-    struct buffer_cache_entry* entry = NULL;
+  while(lru_entry == NULL) {
     for(int i = 0; i < BUFFER_CACHE_SIZE; i++) {
       // If sector is already mapped, return the entry
       if(buffer_cache[i].block == block && buffer_cache[i].sector == sector) {
+        buffer_cache[i].flags |= USED_BIT;
+
         // If entry is currently mapped, wait for it to be unmapped
         while(buffer_cache[i].flags & MAPPED_BIT)
           cond_wait(&buffer_cache[i].cond, &buffer_cache_lock);
+
+        buffer_cache[i].flags |= MAPPED_BIT;
         
-        entry = &buffer_cache[i];
-        break;
+        return &buffer_cache[i];
       }
 
       // Keep track of least recently used entry that is not currently being used
-      if(buffer_cache[i].last_used < least_time && !(buffer_cache[i].flags & MAPPED_BIT)) {
+      if(buffer_cache[i].last_used < least_time && !(buffer_cache[i].flags & USED_BIT)) {
         least_time = buffer_cache[i].last_used;
         lru_entry = &buffer_cache[i];
       }
     }
 
-    // If no matching entry was found, evict least recently used entry
-    bool write_back = false;
-    bool must_evict = false;
-    block_sector_t prev_sector = NO_SECTOR;
-    struct block* prev_block = NULL;
-    if(entry == NULL) {
-      must_evict = true;
-      entry = lru_entry;
-
-      if(entry->flags & DIRTY_BIT) write_back = true;
-
-      prev_block = entry->block;
-      prev_sector = entry->sector;
-      entry->block = block;
-      entry->sector = sector;
-      entry->flags = 0;
-    }
-    
-    entry->flags = entry->flags | MAPPED_BIT;
-
-    lock_release(&buffer_cache_lock);
-    
-    if(write_back) {
-      // Write data to device
-      struct block_operations* ops = prev_block->provider;
-      ASSERT(prev_block->type != BLOCK_FOREIGN);
-      ops->write(prev_block->aux, prev_sector, entry->data);
-      prev_block->write_cnt++;
-    }
-
-    if(coherent && must_evict) {
-      // Read data from device
-      struct block_operations* ops = block->provider;
-      ops->read(block->aux, sector, entry->data);
-      block->read_cnt++;
-    }
-
-    result = entry->data;
+    /* If all entries are mapped, wait on the cache-wide conditional variable
+       then simply scan the cache again. */
+    if(lru_entry == NULL)
+      cond_wait(&buffer_cache_cond, &buffer_cache_lock);
   }
 
-  return result;
+  lru_entry->flags |= USED_BIT;
+  lru_entry->flags |= MAPPED_BIT;
+
+  // No matching blocks were found, so we must evict the lru_entry
+  *must_evict = true;
+
+  return lru_entry;
+}
+
+static void flush_entry(struct block* block, block_sector_t sector, struct block* holder, void* data) {
+  // Write data to device
+  ASSERT(block->type == BLOCK_RAW);
+
+  struct block_operations* ops = block->provider;
+  ops->write(block->aux, sector, data);
+  block->write_cnt++;
+
+  if(holder->type != BLOCK_RAW)
+    holder->write_cnt++;
+}
+
+void* block_map_sector(struct block* vblock, block_sector_t vsector, bool coherent) {
+  check_sector(vblock, vsector);
+
+  lock_acquire(&buffer_cache_lock);
+
+  struct block* block = vblock;
+  block_sector_t sector = vsector;
+  if(vblock->type != BLOCK_RAW) {
+    block = vblock->provider;
+    sector = vsector + ((uint64_t)vblock->aux);
+  }
+  
+  bool must_evict = false;
+  struct buffer_cache_entry* entry = select_entry(block, sector, &must_evict);
+  
+  // If must_evict is true, we need to clean this entry before using it
+  bool write_back = false;
+  block_sector_t prev_sector = NO_SECTOR;
+  struct block* prev_block = NULL;
+  struct block* prev_holder = NULL;
+  if(must_evict) {
+    /* If the entry is dirty, record what sector it used to point to
+        so that it can be used later to evict the data. We cannot do 
+        the eviction here because we are still holding the global
+        cache lock. */
+    if(entry->flags & DIRTY_BIT) {
+      write_back = true;
+      prev_block = entry->block;
+      prev_sector = entry->sector;
+      prev_holder = entry->holder;
+    }
+
+    entry->block = block;
+    entry->sector = sector;
+    entry->flags &= (~DIRTY_BIT);
+  }
+
+  entry->holder = vblock;
+
+  lock_release(&buffer_cache_lock);
+  
+  // If the entry has only data 
+  if(write_back)
+    flush_entry(prev_block, prev_sector, prev_holder, entry->data);
+
+  if(coherent && must_evict) {
+    // Read data from device
+    struct block_operations* ops = block->provider;
+    ops->read(block->aux, sector, entry->data);
+    block->read_cnt++;
+
+    if(vblock->type != BLOCK_RAW)
+      vblock->read_cnt++;
+  }
+
+  return entry->data;
 }
 
 void block_unmap_sector(struct block* block, block_sector_t sector, bool dirty) {
@@ -228,6 +279,7 @@ void block_unmap_sector(struct block* block, block_sector_t sector, bool dirty) 
 
   lock_acquire(&buffer_cache_lock);
 
+  // Search for entry to be unmapped
   struct buffer_cache_entry* entry = NULL;
   for(int i = 0; i < BUFFER_CACHE_SIZE; i++) {
     if(buffer_cache[i].block == block && buffer_cache[i].sector == sector && buffer_cache[i].flags & MAPPED_BIT) {
@@ -236,17 +288,25 @@ void block_unmap_sector(struct block* block, block_sector_t sector, bool dirty) 
     }
   }
 
-  if(entry == NULL)
-    PANIC("Trying to unmap block sector that is not mapped!");
+  // If entry is NULL, then we tried to unmap an entry that isn't mapped
+  ASSERT(entry != NULL);
 
-  entry->flags = entry->flags & (~MAPPED_BIT);
+  entry->flags &= (~MAPPED_BIT);
   entry->last_used = usage_counter++;
 
   if(dirty)
-    entry->flags = entry->flags | DIRTY_BIT;
+    entry->flags |= DIRTY_BIT;
 
-  cond_signal(&entry->cond, &buffer_cache_lock);
-  
+  /* Signal any waiters, making sure to first signal threads
+     which are trying to access the already present cache entry,
+     then signal threads that seek to evict the entry. */
+  if(!list_empty(&entry->cond.waiters)) {
+    cond_signal(&entry->cond, &buffer_cache_lock);
+  } else {
+    entry->flags &= (~USED_BIT);
+    cond_signal(&buffer_cache_cond, &buffer_cache_lock);
+  }
+
   lock_release(&buffer_cache_lock);
 }
 
@@ -312,7 +372,6 @@ struct block* block_register(const char* name, enum block_type type, const char*
   block->aux = aux;
   block->read_cnt = 0;
   block->write_cnt = 0;
-  block->id = next_block_device_id++;
   
   printf("%s: %'" PRDSNu " sectors (", block->name, block->size);
   print_human_readable_size((uint64_t)block->size * BLOCK_SECTOR_SIZE);
