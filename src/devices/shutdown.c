@@ -79,6 +79,7 @@ void shutdown_power_off(void) {
 
 #ifdef FILESYS
   filesys_done();
+  block_done();
 #endif
 
   print_stats();

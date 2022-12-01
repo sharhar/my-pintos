@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <inttypes.h>
+#include <stdbool.h>
 
 /* Size of a block device sector in bytes.
    All IDE disks use this sector size, as do most USB and SCSI
@@ -38,6 +39,8 @@ enum block_type {
   BLOCK_CNT                   /* Number of Pintos block types. */
 };
 
+void block_init(void);
+void block_done(void);
 const char* block_type_name(enum block_type);
 
 /* Finding block devices. */
@@ -55,6 +58,10 @@ void block_write(struct block*, block_sector_t, const void*);
 const char* block_name(struct block*);
 enum block_type block_type(struct block*);
 
+/* Fine grained block device operations */
+void* block_map_sector(struct block*, block_sector_t, bool);
+void block_unmap_sector(struct block*, block_sector_t, bool);
+
 /* Statistics. */
 void block_print_stats(void);
 
@@ -66,6 +73,6 @@ struct block_operations {
 };
 
 struct block* block_register(const char* name, enum block_type, const char* extra_info,
-                             block_sector_t size, const struct block_operations*, void* aux);
+                             block_sector_t size, void*, void* aux);
 
 #endif /* devices/block.h */

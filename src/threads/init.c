@@ -125,6 +125,7 @@ int main(void) {
 
 #ifdef FILESYS
   /* Initialize file system. */
+  block_init();
   ide_init();
   locate_block_devices();
   filesys_init(format_filesys);

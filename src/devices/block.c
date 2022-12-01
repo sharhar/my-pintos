@@ -1,9 +1,30 @@
 #include "devices/block.h"
 #include <list.h>
 #include <string.h>
+#include <round.h>
 #include <stdio.h>
+#include <threads/palloc.h>
+#include <threads/vaddr.h>
+#include <threads/synch.h>
+#include <bitmap.h>
 #include "devices/ide.h"
 #include "threads/malloc.h"
+
+#define BUFFER_CACHE_SIZE 64
+#define BUFFER_CACHE_PAGE_COUNT DIV_ROUND_UP(BUFFER_CACHE_SIZE * BLOCK_SECTOR_SIZE, PGSIZE)
+
+#define NO_SECTOR ((block_sector_t)-1)
+
+#define DIRTY_BIT  ((uint8_t)1)
+#define MAPPED_BIT ((uint8_t)2)
+
+struct buffer_cache_entry {
+  block_sector_t sector;
+  uint64_t last_used;
+  uint8_t flags;
+  struct condition cond;
+  uint8_t* data;
+};
 
 /* A block device. */
 struct block {
@@ -12,9 +33,10 @@ struct block {
   char name[16];        /* Block device name. */
   enum block_type type; /* Type of block device. */
   block_sector_t size;  /* Size in sectors. */
+  uint32_t id;
 
-  const struct block_operations* ops; /* Driver operations. */
-  void* aux;                          /* Extra data owned by driver. */
+  void* provider;
+  void* aux;
 
   unsigned long long read_cnt;  /* Number of sectors read. */
   unsigned long long write_cnt; /* Number of sectors written. */
@@ -27,6 +49,31 @@ static struct list all_blocks = LIST_INITIALIZER(all_blocks);
 static struct block* block_by_role[BLOCK_ROLE_CNT];
 
 static struct block* list_elem_to_block(struct list_elem*);
+
+static uint32_t next_block_device_id;
+static uint64_t usage_counter;
+static struct lock buffer_cache_lock;
+static uint8_t* buffer_cache_data;
+static struct buffer_cache_entry buffer_cache[BUFFER_CACHE_SIZE];
+
+void block_init(void) {
+  next_block_device_id = 1;
+  usage_counter = 1;
+  lock_init(&buffer_cache_lock);
+  buffer_cache_data = palloc_get_multiple(0, BUFFER_CACHE_PAGE_COUNT);
+
+  for(int i = 0; i < BUFFER_CACHE_SIZE; i++) {
+    cond_init(&buffer_cache[i].cond);
+    buffer_cache[i].sector = NO_SECTOR;
+    buffer_cache[i].last_used = 0;
+    buffer_cache[i].flags = 0;
+    buffer_cache[i].data = &buffer_cache_data[BLOCK_SECTOR_SIZE*i];
+  }
+}
+
+void block_done(void) {
+  palloc_free_multiple(buffer_cache_data, BUFFER_CACHE_PAGE_COUNT);
+}
 
 /* Returns a human-readable name for the given block device
    TYPE. */
@@ -90,14 +137,108 @@ static void check_sector(struct block* block, block_sector_t sector) {
   }
 }
 
+static struct buffer_cache_entry* find_entry(struct block* block, block_sector_t sector, bool* must_evict) {
+  ASSERT(lock_held_by_current_thread(&buffer_cache_lock));
+
+  uint64_t least_time = ((uint64_t)-1);
+  struct buffer_cache_entry* lru_entry = NULL;
+
+  *must_evict = false;
+
+  for(int i = 0; i < BUFFER_CACHE_SIZE; i++) {
+    if(buffer_cache[i].sector == sector)
+      return &buffer_cache[i];
+
+    if(buffer_cache[i].last_used < least_time && !(buffer_cache[i].flags & MAPPED_BIT)) {
+      least_time = buffer_cache[i].last_used;
+      lru_entry = &buffer_cache[i];
+    }
+  }
+
+  *must_evict = true;
+
+  return lru_entry;
+}
+
+void* block_map_sector(struct block* block, block_sector_t sector, bool coherent) {
+  if(block->type != BLOCK_RAW)
+    return block_map_sector(block->provider, sector + ((uint64_t)block->aux), coherent);
+
+  lock_acquire(&buffer_cache_lock);
+
+  bool must_evict;
+  block_sector_t prev_sector = NO_SECTOR;
+  bool write_back = false;
+  struct buffer_cache_entry* entry = find_entry(block, sector, &must_evict);
+
+  if(must_evict) {
+    if(entry->flags & MAPPED_BIT)
+      PANIC("Trying to evict mapped buffer cache entry!");
+
+    if(entry->flags & DIRTY_BIT) write_back = true;
+    prev_sector = entry->sector;
+    entry->sector = sector;
+    entry->flags = 0;
+  }
+
+  while(entry->flags & MAPPED_BIT)
+    cond_wait(&entry->cond, &buffer_cache_lock);
+
+  entry->flags = entry->flags | MAPPED_BIT;
+
+  lock_release(&buffer_cache_lock);
+
+  struct block_operations* ops = block->provider;
+
+  if(write_back) {
+    check_sector(block, sector);
+    ASSERT(block->type != BLOCK_FOREIGN);
+    ops->write(block->aux, prev_sector, entry->data);
+    block->write_cnt++;
+  }
+
+  if(coherent && must_evict) {
+    check_sector(block, sector);
+    ops->read(block->aux, sector, entry->data);
+    block->read_cnt++;
+  }
+
+  return entry->data;
+}
+
+void block_unmap_sector(struct block* block, block_sector_t sector, bool dirty) {
+  if(block->type != BLOCK_RAW) {
+    block_unmap_sector(block->provider, sector + ((uint64_t)block->aux), dirty);
+    return;
+  }
+
+  lock_acquire(&buffer_cache_lock);
+
+  bool must_evict;
+  struct buffer_cache_entry* entry = find_entry(block, sector, &must_evict);
+
+  if(must_evict || entry == NULL)
+    PANIC("Trying to unmap block sector that is not mapped!");
+
+  entry->flags = entry->flags & (~MAPPED_BIT);
+  entry->last_used = usage_counter++;
+
+  if(dirty)
+    entry->flags = entry->flags | DIRTY_BIT;
+
+  cond_signal(&entry->cond, &buffer_cache_lock);
+  
+  lock_release(&buffer_cache_lock);
+}
+
 /* Reads sector SECTOR from BLOCK into BUFFER, which must
    have room for BLOCK_SECTOR_SIZE bytes.
    Internally synchronizes accesses to block devices, so external
    per-block device locking is unneeded. */
 void block_read(struct block* block, block_sector_t sector, void* buffer) {
-  check_sector(block, sector);
-  block->ops->read(block->aux, sector, buffer);
-  block->read_cnt++;
+  void* mapped_sector = block_map_sector(block, sector, true);
+  memcpy(buffer, mapped_sector, BLOCK_SECTOR_SIZE);
+  block_unmap_sector(block, sector, false);
 }
 
 /* Write sector SECTOR to BLOCK from BUFFER, which must contain
@@ -106,10 +247,9 @@ void block_read(struct block* block, block_sector_t sector, void* buffer) {
    Internally synchronizes accesses to block devices, so external
    per-block device locking is unneeded. */
 void block_write(struct block* block, block_sector_t sector, const void* buffer) {
-  check_sector(block, sector);
-  ASSERT(block->type != BLOCK_FOREIGN);
-  block->ops->write(block->aux, sector, buffer);
-  block->write_cnt++;
+  void* mapped_sector = block_map_sector(block, sector, false);
+  memcpy(mapped_sector, buffer, BLOCK_SECTOR_SIZE);
+  block_unmap_sector(block, sector, true);
 }
 
 /* Returns the number of sectors in BLOCK. */
@@ -140,7 +280,7 @@ void block_print_stats(void) {
    be provided, as well as the it operation functions OPS, which
    will be passed AUX in each function call. */
 struct block* block_register(const char* name, enum block_type type, const char* extra_info,
-                             block_sector_t size, const struct block_operations* ops, void* aux) {
+                             block_sector_t size, void* provider, void* aux) {
   struct block* block = malloc(sizeof *block);
   if (block == NULL)
     PANIC("Failed to allocate memory for block device descriptor");
@@ -149,11 +289,12 @@ struct block* block_register(const char* name, enum block_type type, const char*
   strlcpy(block->name, name, sizeof block->name);
   block->type = type;
   block->size = size;
-  block->ops = ops;
+  block->provider = provider;
   block->aux = aux;
   block->read_cnt = 0;
   block->write_cnt = 0;
-
+  block->id = next_block_device_id++;
+  
   printf("%s: %'" PRDSNu " sectors (", block->name, block->size);
   print_human_readable_size((uint64_t)block->size * BLOCK_SECTOR_SIZE);
   printf(")");

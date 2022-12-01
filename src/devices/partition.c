@@ -6,14 +6,6 @@
 #include "devices/block.h"
 #include "threads/malloc.h"
 
-/* A partition of a block device. */
-struct partition {
-  struct block* block;  /* Underlying block device. */
-  block_sector_t start; /* First sector within device. */
-};
-
-static struct block_operations partition_operations;
-
 static void read_partition_table(struct block*, block_sector_t sector,
                                  block_sector_t primary_extended_sector, int* part_nr);
 static void found_partition(struct block*, uint8_t type, block_sector_t start, block_sector_t size,
@@ -149,15 +141,9 @@ static void found_partition(struct block* block, uint8_t part_type, block_sector
     char extra_info[128];
     char name[16];
 
-    p = malloc(sizeof *p);
-    if (p == NULL)
-      PANIC("Failed to allocate memory for partition descriptor");
-    p->block = block;
-    p->start = start;
-
     snprintf(name, sizeof name, "%s%d", block_name(block), part_nr);
     snprintf(extra_info, sizeof extra_info, "%s (%02x)", partition_type_name(part_type), part_type);
-    block_register(name, type, extra_info, size, &partition_operations, p);
+    block_register(name, type, extra_info, size, block, start);
   }
 }
 
@@ -270,20 +256,3 @@ static const char* partition_type_name(uint8_t type) {
 
   return type_names[type] != NULL ? type_names[type] : "Unknown";
 }
-
-/* Reads sector SECTOR from partition P into BUFFER, which must
-   have room for BLOCK_SECTOR_SIZE bytes. */
-static void partition_read(void* p_, block_sector_t sector, void* buffer) {
-  struct partition* p = p_;
-  block_read(p->block, p->start + sector, buffer);
-}
-
-/* Write sector SECTOR to partition P from BUFFER, which must
-   contain BLOCK_SECTOR_SIZE bytes.  Returns after the block has
-   acknowledged receiving the data. */
-static void partition_write(void* p_, block_sector_t sector, const void* buffer) {
-  struct partition* p = p_;
-  block_write(p->block, p->start + sector, buffer);
-}
-
-static struct block_operations partition_operations = {partition_read, partition_write};

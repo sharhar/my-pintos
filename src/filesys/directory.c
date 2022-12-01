@@ -85,6 +85,7 @@ static bool lookup(const struct dir* dir, const char* name, struct dir_entry* ep
         *ofsp = ofs;
       return true;
     }
+  
   return false;
 }
 
