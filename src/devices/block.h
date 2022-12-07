@@ -15,6 +15,8 @@
    Good enough for devices up to 2 TB. */
 typedef uint32_t block_sector_t;
 
+#define BLOCK_SECTOR_NONE ((block_sector_t)-1)
+
 /* Format specifier for printf(), e.g.:
    printf ("sector=%"PRDSNu"\n", sector); */
 #define PRDSNu PRIu32
@@ -61,6 +63,9 @@ enum block_type block_type(struct block*);
 /* Fine grained block device operations */
 void* block_map_sector(struct block*, block_sector_t, bool);
 void block_unmap_sector(struct block*, block_sector_t, bool);
+
+void block_read_direct(struct block*, block_sector_t, void*);
+void block_write_direct(struct block*, block_sector_t, const void*);
 
 /* Statistics. */
 void block_print_stats(void);

@@ -553,6 +553,7 @@ static void init_thread(struct thread* t, const char* name, int priority) {
   t->killed = false;
   t->pcb = NULL;
   t->user_control = NULL;
+  t->mapped_entry = NULL;
   t->magic = THREAD_MAGIC;
 
   old_level = intr_disable();

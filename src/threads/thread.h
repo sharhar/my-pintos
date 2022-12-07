@@ -106,6 +106,9 @@ struct thread {
   bool in_syscall; // to be used in exception.c to determine if a page_fault is the cause of a bad user pointer
 #endif
 
+  /* Owned by block.c */
+  void* mapped_entry;
+
   /* Owned by thread.c. */
   unsigned magic; /* Detects stack overflow. */
 };

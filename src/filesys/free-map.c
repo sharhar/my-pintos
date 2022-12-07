@@ -24,20 +24,29 @@ void free_map_init(void) {
    written. */
 bool free_map_allocate(size_t cnt, block_sector_t* sectorp) {
   block_sector_t sector = bitmap_scan_and_flip(free_map, 0, cnt, false);
-  if (sector != BITMAP_ERROR && free_map_file != NULL && !bitmap_write(free_map, free_map_file)) {
-    bitmap_set_multiple(free_map, sector, cnt, false);
-    sector = BITMAP_ERROR;
-  }
+  //if (sector != BITMAP_ERROR && free_map_file != NULL) {
+  //    bitmap_set_multiple(free_map, sector, cnt, false);
+  //    sector = BITMAP_ERROR;
+  //}
   if (sector != BITMAP_ERROR)
     *sectorp = sector;
   return sector != BITMAP_ERROR;
 }
 
+bool free_map_flush() {
+  return bitmap_write(free_map, free_map_file);
+}
+
 /* Makes CNT sectors starting at SECTOR available for use. */
 void free_map_release(block_sector_t sector, size_t cnt) {
-  ASSERT(bitmap_all(free_map, sector, cnt));
+  ASSERT(sector != FREE_MAP_SECTOR);
+
+  if(!bitmap_all(free_map, sector, cnt)) {
+    printf("%d (%d)\n", sector, cnt);
+    PANIC("FREE PANIC!");
+  }
   bitmap_set_multiple(free_map, sector, cnt, false);
-  bitmap_write(free_map, free_map_file);
+  //free_map_flush();
 }
 
 /* Opens the free map file and reads it from disk. */
@@ -50,19 +59,22 @@ void free_map_open(void) {
 }
 
 /* Writes the free map to disk and closes the free map file. */
-void free_map_close(void) { file_close(free_map_file); }
+void free_map_close(void) {
+  free_map_flush();
+  file_close(free_map_file);
+}
 
 /* Creates a new free map file on disk and writes the free map to
    it. */
 void free_map_create(void) {
   /* Create inode. */
+
   if (!inode_create(FREE_MAP_SECTOR, bitmap_file_size(free_map)))
     PANIC("free map creation failed");
-
   /* Write bitmap to file. */
   free_map_file = file_open(inode_open(FREE_MAP_SECTOR));
   if (free_map_file == NULL)
     PANIC("can't open free map");
-  if (!bitmap_write(free_map, free_map_file))
+  if (!free_map_flush())
     PANIC("can't write free map");
 }

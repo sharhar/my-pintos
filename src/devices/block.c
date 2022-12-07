@@ -9,11 +9,10 @@
 #include <bitmap.h>
 #include "devices/ide.h"
 #include "threads/malloc.h"
+#include <threads/thread.h>
 
 #define BUFFER_CACHE_SIZE 64
 #define BUFFER_CACHE_PAGE_COUNT DIV_ROUND_UP(BUFFER_CACHE_SIZE * BLOCK_SECTOR_SIZE, PGSIZE)
-
-#define NO_SECTOR ((block_sector_t)-1)
 
 #define DIRTY_BIT  ((uint8_t)1)
 #define MAPPED_BIT ((uint8_t)2)
@@ -75,7 +74,7 @@ void block_init(void) {
     cond_init(&buffer_cache[i].cond);
     buffer_cache[i].block = NULL;
     buffer_cache[i].holder = NULL;
-    buffer_cache[i].sector = NO_SECTOR;
+    buffer_cache[i].sector = BLOCK_SECTOR_NONE;
     buffer_cache[i].last_used = 0;
     buffer_cache[i].flags = 0;
     buffer_cache[i].data = &buffer_cache_data[BLOCK_SECTOR_SIZE*i];
@@ -201,6 +200,42 @@ static struct buffer_cache_entry* select_entry(struct block* block, block_sector
   return lru_entry;
 }
 
+void block_read_direct(struct block* block, block_sector_t sector, void* data) {
+  struct block* device = block;
+  block_sector_t physical_sector = sector;
+
+  if(block != BLOCK_RAW) {
+    device = block->provider;
+    physical_sector = sector + ((uint64_t)block->aux);
+  }
+
+  struct block_operations* ops = device->provider;
+
+  ops->read(device->aux, physical_sector, data);
+  device->read_cnt++;
+
+  if(block != BLOCK_RAW)
+    block->read_cnt++;
+}
+
+void block_write_direct(struct block* block, block_sector_t sector, const void* data) {
+  struct block* device = block;
+  block_sector_t physical_sector = sector;
+
+  if(block != BLOCK_RAW) {
+    device = block->provider;
+    physical_sector = sector + ((uint64_t)block->aux);
+  }
+
+  struct block_operations* ops = device->provider;
+
+  ops->write(device->aux, physical_sector, data);
+  device->write_cnt++;
+
+  if(block != BLOCK_RAW)
+    block->write_cnt++;
+}
+
 static void flush_entry(struct block* block, block_sector_t sector, struct block* holder, void* data) {
   // Write data to device
   ASSERT(block->type == BLOCK_RAW);
@@ -214,6 +249,8 @@ static void flush_entry(struct block* block, block_sector_t sector, struct block
 }
 
 void* block_map_sector(struct block* vblock, block_sector_t vsector, bool coherent) {
+  ASSERT(thread_current()->mapped_entry == NULL);
+
   check_sector(vblock, vsector);
 
   lock_acquire(&buffer_cache_lock);
@@ -230,7 +267,7 @@ void* block_map_sector(struct block* vblock, block_sector_t vsector, bool cohere
   
   // If must_evict is true, we need to clean this entry before using it
   bool write_back = false;
-  block_sector_t prev_sector = NO_SECTOR;
+  block_sector_t prev_sector = BLOCK_SECTOR_NONE;
   struct block* prev_block = NULL;
   struct block* prev_holder = NULL;
   if(must_evict) {
@@ -252,6 +289,8 @@ void* block_map_sector(struct block* vblock, block_sector_t vsector, bool cohere
 
   entry->holder = vblock;
 
+  thread_current()->mapped_entry = entry;
+
   lock_release(&buffer_cache_lock);
   
   // If the entry has only data 
@@ -272,6 +311,8 @@ void* block_map_sector(struct block* vblock, block_sector_t vsector, bool cohere
 }
 
 void block_unmap_sector(struct block* block, block_sector_t sector, bool dirty) {
+  ASSERT(thread_current()->mapped_entry != NULL);
+
   if(block->type != BLOCK_RAW) {
     block_unmap_sector(block->provider, sector + ((uint64_t)block->aux), dirty);
     return;
@@ -290,12 +331,16 @@ void block_unmap_sector(struct block* block, block_sector_t sector, bool dirty) 
 
   // If entry is NULL, then we tried to unmap an entry that isn't mapped
   ASSERT(entry != NULL);
+  ASSERT(thread_current()->mapped_entry == entry);
 
   entry->flags &= (~MAPPED_BIT);
   entry->last_used = usage_counter++;
 
   if(dirty)
     entry->flags |= DIRTY_BIT;
+
+  
+  thread_current()->mapped_entry = NULL;
 
   /* Signal any waiters, making sure to first signal threads
      which are trying to access the already present cache entry,
