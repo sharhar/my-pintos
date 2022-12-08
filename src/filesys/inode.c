@@ -40,21 +40,8 @@ static bool block_exists(block_sector_t blck) {
   return (blck | LENGTH_BIT) != BLOCK_SECTOR_NONE;
 }
 
-static block_sector_t* change_mode(struct rw_lock* lock, bool* reader, block_sector_t sector, bool dirty, bool remap, enum AccessMode mode) {
-  block_unmap_sector(fs_device, sector, dirty);
-  rw_lock_release(lock, *reader);
-  *reader = mode == MODE_READ_ONLY;
-  rw_lock_acquire(lock, *reader);
-
-  void* result = NULL;
-  if(remap)
-    result = block_map_sector(fs_device, sector, true);
-
-  return result;
-}
-
 /* Finds the entry for the sector information we want. */
-static block_sector_t find_entry(struct rw_lock* lock, block_sector_t sector, off_t index, bool make_if_absent, uint32_t clear_data, bool* reader) {
+static block_sector_t find_entry(block_sector_t sector, off_t index, bool make_if_absent, uint32_t clear_data) {
   block_sector_t* sector_mem = block_map_sector(fs_device, sector, true);
 
   // If the page is already allocated, just return it's sector
@@ -63,20 +50,10 @@ static block_sector_t find_entry(struct rw_lock* lock, block_sector_t sector, of
     return sector_mem[index];
   }
 
-  // Change to write enabled mode
-  sector_mem = change_mode(lock, reader, sector, false, true, MODE_READ_AND_WRITE);
-
-  // Check for the page entry again, maybe another thread already added it
-  if(block_exists(sector_mem[index])) {
-    block_sector_t result = sector_mem[index];
-    change_mode(lock, reader, sector, false, false, MODE_READ_ONLY);
-    return result;
-  }
-
   //Otherwise, we allocate a new page
   block_sector_t new_page_sector;
   if(!free_map_allocate(1, &new_page_sector)) {
-    change_mode(lock, reader, sector, false, false, MODE_READ_ONLY);
+    block_unmap_sector(fs_device, sector, false);
     return BLOCK_SECTOR_NONE;
   }
 
@@ -88,7 +65,7 @@ static block_sector_t find_entry(struct rw_lock* lock, block_sector_t sector, of
   free(new_sector);
 
   sector_mem[index] = (sector_mem[index] & LENGTH_BIT) | GET_SECTOR(new_page_sector);
-  change_mode(lock, reader, sector, true, false, MODE_READ_ONLY);
+  block_unmap_sector(fs_device, sector, true);
   return new_page_sector;
 };
 
@@ -104,22 +81,15 @@ static block_sector_t byte_to_sector(const struct inode* inode, off_t pos, bool 
   off_t page_index = sector_num / PAGE_ENTRY_COUNT;
   off_t sector_index = sector_num % PAGE_ENTRY_COUNT;
 
-  bool reader = true;
-  rw_lock_acquire(&inode->lock, reader);
-
-  block_sector_t page = find_entry(&inode->lock, GET_SECTOR(inode->sector), page_index, make_if_absent, BLOCK_SECTOR_NONE, &reader);
+  block_sector_t page = find_entry(GET_SECTOR(inode->sector), page_index, make_if_absent, BLOCK_SECTOR_NONE);
   if(!block_exists(page)) {
-    rw_lock_release(&inode->lock, reader);
     return BLOCK_SECTOR_NONE;
   }
 
-  block_sector_t sector = find_entry(&inode->lock, GET_SECTOR(page), sector_index, make_if_absent, 0, &reader);
+  block_sector_t sector = find_entry(GET_SECTOR(page), sector_index, make_if_absent, 0);
   if(!block_exists(sector)) {
-    rw_lock_release(&inode->lock, reader);
     return BLOCK_SECTOR_NONE;
   }
-
-  rw_lock_release(&inode->lock, reader);
 
   return GET_SECTOR(sector);
 }
@@ -128,8 +98,13 @@ static block_sector_t byte_to_sector(const struct inode* inode, off_t pos, bool 
    returns the same `struct inode'. */
 static struct list open_inodes;
 
+static struct lock open_inodes_lock;
+
 /* Initializes the inode module. */
-void inode_init(void) { list_init(&open_inodes); }
+void inode_init(void) {
+  lock_init(&open_inodes_lock);
+  list_init(&open_inodes);
+}
 
 static void page_list_set_length(block_sector_t* page_list, off_t length) {
   for(int i = 0; i < 32; i++)
@@ -202,11 +177,14 @@ struct inode* inode_open(block_sector_t sector) {
   struct list_elem* e;
   struct inode* inode;
 
+  lock_acquire(&open_inodes_lock);
+
   /* Check whether this inode is already open. */
   for (e = list_begin(&open_inodes); e != list_end(&open_inodes); e = list_next(e)) {
     inode = list_entry(e, struct inode, elem);
     if (inode->sector == sector) {
       inode_reopen(inode);
+      lock_release(&open_inodes_lock);
       return inode;
     }
   }
@@ -223,6 +201,10 @@ struct inode* inode_open(block_sector_t sector) {
   inode->deny_write_cnt = 0;
   inode->removed = false;
   rw_lock_init(&inode->lock);
+
+  lock_release(&open_inodes_lock);
+
+
   return inode;
 }
 
@@ -230,6 +212,7 @@ struct inode* inode_open(block_sector_t sector) {
 struct inode* inode_reopen(struct inode* inode) {
   if (inode != NULL)
     inode->open_cnt++;
+
   return inode;
 }
 
@@ -299,10 +282,9 @@ off_t inode_read_at(struct inode* inode, void* buffer_, off_t size, off_t offset
   uint8_t* buffer = buffer_;
   off_t bytes_read = 0;
 
-  off_t inode_len = inode_length(inode);
+  rw_lock_acquire(&inode->lock, true);
 
-  //if(inode_len < size + offset)
-  //  inode_len = size + offset;
+  off_t inode_len = inode_length(inode);
 
   while (size > 0) {
     /* Disk sector to read, starting byte offset within sector. */
@@ -333,6 +315,8 @@ off_t inode_read_at(struct inode* inode, void* buffer_, off_t size, off_t offset
     bytes_read += chunk_size;
   }
 
+  rw_lock_release(&inode->lock, true);
+
   return bytes_read;
 }
 
@@ -347,6 +331,8 @@ off_t inode_write_at(struct inode* inode, const void* buffer_, off_t size, off_t
 
   if (inode->deny_write_cnt)
     return 0;
+
+  rw_lock_acquire(&inode->lock, false);
   
   off_t inode_len = inode_length(inode);
 
@@ -381,6 +367,8 @@ off_t inode_write_at(struct inode* inode, const void* buffer_, off_t size, off_t
     offset += chunk_size;
     bytes_written += chunk_size;
   }
+
+  rw_lock_release(&inode->lock, false);
 
   return bytes_written;
 }

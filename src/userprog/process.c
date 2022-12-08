@@ -233,7 +233,8 @@ static void start_process(void* _startInfo) {
 
   struct process_file* proc_file = process_heap_alloc(sizeof(struct process_file));
   proc_file->fd = 2;
-  proc_file->filePtr = proc_file_handle;
+  proc_file->handle = proc_file_handle;
+  proc_file->is_dir = false;
   list_push_front(&t->pcb->files, &proc_file->elem);
 
   struct user_thread* uthread = process_heap_alloc(sizeof(struct user_thread));
@@ -371,7 +372,10 @@ static void close_process_files(struct process* pcb) {
   for(e = list_begin(&pcb->files); e != list_end(&pcb->files); e = list_next(e)) {
     struct process_file* pf = list_entry(e, struct process_file, elem);
 
-    file_close(pf->filePtr);
+    if(pf->is_dir)
+      dir_close(pf->handle);
+    else 
+      file_close(pf->handle);
   }
 }
 
@@ -634,8 +638,10 @@ bool load(const char* file_name, void (**eip)(void), void** esp, struct file** f
   process_activate();
 
   /* Open executable file. */
-  file = filesys_open(file_name);
-  if (file == NULL) {
+  bool is_dir;
+  file = file_open(filesys_open(file_name, &is_dir));
+  if (file == NULL || is_dir) {
+    file_close(file);
     printf("load: %s: open failed\n", file_name);
     goto done;
   }

@@ -31,7 +31,8 @@ struct child_process {
 
 struct process_file {
   int fd;
-  struct file* filePtr;
+  void* handle;
+  bool is_dir;
   struct list_elem elem;
 };
 

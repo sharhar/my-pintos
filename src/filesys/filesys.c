@@ -6,6 +6,7 @@
 #include "filesys/free-map.h"
 #include "filesys/inode.h"
 #include "filesys/directory.h"
+#include <threads/malloc.h>
 
 /* Partition that contains the file system. */
 struct block* fs_device;
@@ -48,7 +49,7 @@ static int get_next_part(char part[NAME_MAX + 1], const char** srcp) {
   int copy_amount = 0;
   /* Copy up to NAME_MAX character from SRC to DST.  Add null terminator. */
   while (*src != '/' && *src != '\0') {
-    if (dst < part + NAME_MAX) {
+    if (dst < part + NAME_MAX && copy_amount < NAME_MAX) {
       copy_amount++;
       *dst++ = *src;
     } else
@@ -62,13 +63,16 @@ static int get_next_part(char part[NAME_MAX + 1], const char** srcp) {
   return copy_amount;
 }
 
-static void to_absoulte_path(char* result, const char* path) {
+static bool to_absoulte_path(char* result, const char* path) {
   int part_len = 0;
   int32_t result_off = 0;
   do {
     result[result_off] = '/';
     result_off++;
     part_len = get_next_part(&result[result_off], &path);
+
+    if(part_len == -1)
+      return false;
     
     if(part_len == 1 && result[result_off] == '.') {
       result_off--;
@@ -83,12 +87,27 @@ static void to_absoulte_path(char* result, const char* path) {
   } while(part_len > 0);
 
   result[result_off-1] = '\0';
+
+  return true;
 }
 
-static struct inode* get_inode_from_path(const char* name, struct dir** parent_dir) {
-  char clean_path[strlen(name) + 1];
-  to_absoulte_path(clean_path, name);
-  
+static struct inode* get_inode_from_path(const char* name, struct dir** parent_dir, char* file_name, bool* is_dir) {
+  char* clean_path = calloc(strlen(name) + 1, 1);
+
+  void* clean_path_mem = clean_path;
+
+  if(!to_absoulte_path(clean_path, name)) {
+    *parent_dir = NULL;
+    free(clean_path_mem);
+    return NULL;
+  }
+
+  if(strlen(clean_path) == 0) {
+    *parent_dir = NULL;
+    free(clean_path_mem);
+    return NULL;
+  }
+
   struct inode* result = inode_open(ROOT_DIR_SECTOR);
   struct dir* curr_dir = NULL;
 
@@ -97,20 +116,30 @@ static struct inode* get_inode_from_path(const char* name, struct dir** parent_d
     int part_len = get_next_part(part, &clean_path);
     if(part_len == 0) {
       *parent_dir = curr_dir;
+      free(clean_path_mem);
       return result;
     } else if(part_len == -1) {
+      dir_close(curr_dir);
       *parent_dir = NULL;
+      free(clean_path_mem);
       return NULL;
     }
+
+    dir_close(curr_dir);
 
     curr_dir = dir_open(result);
     if(curr_dir == NULL) {
       *parent_dir = NULL;
+      free(clean_path_mem);
       return NULL;
     }
 
-    dir_lookup(curr_dir, part, &result);
+    memcpy(file_name, part, NAME_MAX + 1);
+
+    dir_lookup(curr_dir, part, &result, is_dir);
   }
+
+  free(clean_path_mem);
 
   return NULL;
 }
@@ -119,38 +148,41 @@ static struct inode* get_inode_from_path(const char* name, struct dir** parent_d
    Returns true if successful, false otherwise.
    Fails if a file named NAME already exists,
    or if internal memory allocation fails. */
-bool filesys_create(const char* name, off_t initial_size) {
-  /*
+bool filesys_create(const char* name, off_t initial_size, bool is_dir) {
   struct dir* dir;
-  struct inode* search_result = get_inode_from_path(name, &dir);
+  char file_name[NAME_MAX + 1];
+  struct inode* search_result = get_inode_from_path(name, &dir, file_name, NULL);
 
-  if(search_result != NULL || dir == NULL)
+  if(search_result != NULL || dir == NULL) {
+    inode_close(search_result);
+    dir_close(dir);
     return false;
+  }
 
   block_sector_t inode_sector = 0;
-  if(!free_map_allocate(1, &inode_sector))
+  if(!free_map_allocate(1, &inode_sector)) {
+    dir_close(dir);
     return false;
+  }
 
   if(!inode_create(inode_sector, initial_size)) {
     free_map_release(inode_sector, 1);
+    dir_close(dir);
+    return false;
+  }
+
+  if(!dir_add(dir, file_name, inode_sector, is_dir)) {
+    struct inode* inode = inode_open(inode_sector);
+    inode_remove(inode);
+    inode_close(inode);
+    free_map_release(inode_sector, 1);
+    dir_close(dir);
     return false;
   }
 
   dir_close(dir);
 
   return true;
-
-  */
-
-  block_sector_t inode_sector = 0;
-  struct dir* dir = dir_open_root();
-  bool success = (dir != NULL && free_map_allocate(1, &inode_sector) &&
-                  inode_create(inode_sector, initial_size) && dir_add(dir, name, inode_sector));
-  if (!success && inode_sector != 0)
-    free_map_release(inode_sector, 1);
-  dir_close(dir);
-
-  return success;
 }
 
 /* Opens the file with the given NAME.
@@ -158,15 +190,14 @@ bool filesys_create(const char* name, off_t initial_size) {
    otherwise.
    Fails if no file named NAME exists,
    or if an internal memory allocation fails. */
-struct file* filesys_open(const char* name) {
-  struct dir* dir = dir_open_root();
-  struct inode* inode = NULL;
-
-  if (dir != NULL)
-    dir_lookup(dir, name, &inode);
+struct inode* filesys_open(const char* name, bool* is_dir) {
+  struct dir* dir;
+  char file_name[NAME_MAX + 1];
+  *is_dir = false;
+  struct inode* search_result = get_inode_from_path(name, &dir, file_name, is_dir);
   dir_close(dir);
 
-  return file_open(inode);
+  return search_result;
 }
 
 /* Deletes the file named NAME.
@@ -174,8 +205,33 @@ struct file* filesys_open(const char* name) {
    Fails if no file named NAME exists,
    or if an internal memory allocation fails. */
 bool filesys_remove(const char* name) {
-  struct dir* dir = dir_open_root();
-  bool success = dir != NULL && dir_remove(dir, name);
+  struct dir* dir;
+  char file_name[NAME_MAX + 1];
+  bool is_dir;
+  struct inode* search_result = get_inode_from_path(name, &dir, file_name, &is_dir);\
+  
+  if(search_result == NULL || dir == NULL) {
+    inode_close(search_result);
+    dir_close(dir);
+    return false;
+  }
+
+  if(is_dir) {
+    struct dir* my_dir = dir_open(search_result);
+    char temp[NAME_MAX + 1];
+    
+    if(dir_readdir(my_dir, temp)) {
+      dir_close(my_dir);
+      return false;
+    }
+
+    dir_close(my_dir);
+  }
+
+  inode_close(search_result);
+
+  bool success = dir_remove(dir, file_name);
+
   dir_close(dir);
 
   return success;

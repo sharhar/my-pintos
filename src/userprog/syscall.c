@@ -14,6 +14,7 @@
 #include <filesys/file.h>
 #include <devices/input.h>
 #include <filesys/directory.h>
+#include <filesys/inode.h>
 
 #define SYSCALL_ENTRY(NUM, FUNC, ARGNUM) case NUM: check_user_pointer((char*)args, (ARGNUM + 1) * 4); FUNC(args, &f->eax); break;
 
@@ -164,7 +165,7 @@ static void syscall_create(uint32_t* args, uint32_t* f_eax) {
   char* filename = (char*)args[1];
   check_user_string(filename);
 
-  *f_eax = filesys_create(filename, (off_t) args[2]);
+  *f_eax = filesys_create(filename, (off_t) args[2], false);
 }
 
 static void syscall_remove(uint32_t* args, uint32_t* f_eax) {
@@ -178,16 +179,20 @@ static void syscall_open(uint32_t* args, uint32_t* f_eax) {
   char* filename = (char*)args[1];
   check_user_string(filename);
 
-  struct file* my_file = filesys_open(filename);
+  bool is_dir;
+  struct inode* my_inode = filesys_open(filename, &is_dir);
+  void* my_handle = is_dir ? dir_open(my_inode) : file_open(my_inode);
 
-  if(my_file == NULL) {
+  if(my_handle == NULL) {
+    inode_close(my_inode);
     *f_eax = (uint32_t) ((int)-1);
     return;
-  } 
+  }
 
   struct process_file* proc_file = process_heap_alloc(sizeof(struct process_file));
   proc_file->fd = next_fd;
-  proc_file->filePtr = my_file;
+  proc_file->is_dir = is_dir;
+  proc_file->handle = my_handle;
 
   lock_acquire(&thread_current()->pcb->files_lock);
   list_push_front(&thread_current()->pcb->files, &proc_file->elem);
@@ -206,7 +211,12 @@ static void syscall_close(uint32_t* args, uint32_t* f_eax) {
   }
 
   lock_acquire(&thread_current()->pcb->files_lock);
-  file_close(proc_file->filePtr);
+
+  if(proc_file->is_dir)
+    dir_close(proc_file->handle);
+  else 
+    file_close(proc_file->handle);
+
   list_remove(&proc_file->elem);
   lock_release(&thread_current()->pcb->files_lock);
 
@@ -216,34 +226,34 @@ static void syscall_close(uint32_t* args, uint32_t* f_eax) {
 static void syscall_filesize(uint32_t* args, uint32_t* f_eax) {
   struct process_file* proc_file = get_file_from_fd(&thread_current()->pcb->files, (int)args[1]);
 
-  if(proc_file == NULL) {
+  if(proc_file == NULL || proc_file->is_dir) {
     *f_eax = (uint32_t) ((int)-1);
     return;
   }
 
-  *f_eax = file_length(proc_file->filePtr);
+  *f_eax = file_length(proc_file->handle);
 }
 
 static void syscall_tell(uint32_t* args, uint32_t* f_eax) {
   struct process_file* proc_file = get_file_from_fd(&thread_current()->pcb->files, (int)args[1]);
 
-  if(proc_file == NULL) {
+  if(proc_file == NULL || proc_file->is_dir) {
     *f_eax = (uint32_t) ((int)-1);
     return;
   }
 
-  *f_eax = file_tell(proc_file->filePtr);
+  *f_eax = file_tell(proc_file->handle);
 }
 
 static void syscall_seek(uint32_t* args, uint32_t* f_eax) {
   struct process_file* proc_file = get_file_from_fd(&thread_current()->pcb->files, (int)args[1]);
 
-  if(proc_file == NULL) {
+  if(proc_file == NULL || proc_file->is_dir) {
     *f_eax = (uint32_t) ((int)-1);
     return;
   }
 
-  file_seek(proc_file->filePtr, (off_t)args[2]);
+  file_seek(proc_file->handle, (off_t)args[2]);
   *f_eax = 0;
 } 
 
@@ -265,12 +275,12 @@ static void syscall_read(uint32_t* args, uint32_t* f_eax) {
   } else {
     struct process_file* proc_file = get_file_from_fd(&thread_current()->pcb->files, fd);
 
-    if(proc_file == NULL) {
+    if(proc_file == NULL || proc_file->is_dir) {
       *f_eax = (uint32_t) ((int)-1);
       return;
     }
 
-    *f_eax = file_read(proc_file->filePtr, user_buffer, user_buffer_size);
+    *f_eax = file_read(proc_file->handle, user_buffer, user_buffer_size);
   }
 }
 
@@ -287,12 +297,12 @@ static void syscall_write(uint32_t* args, UNUSED uint32_t* f_eax) {
   } else {
     struct process_file* proc_file = get_file_from_fd(&thread_current()->pcb->files, fd);
 
-    if(proc_file == NULL) {
+    if(proc_file == NULL || proc_file->is_dir) {
       *f_eax = (uint32_t) ((int)-1);
       return;
     }
 
-    *f_eax = file_write(proc_file->filePtr, user_buffer, user_buffer_size);
+    *f_eax = file_write(proc_file->handle, user_buffer, user_buffer_size);
   }
 }
 

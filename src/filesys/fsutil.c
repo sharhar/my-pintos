@@ -31,13 +31,15 @@ void fsutil_ls(char** argv UNUSED) {
 void fsutil_cat(char** argv) {
   const char* file_name = argv[1];
 
+  bool is_dir;
   struct file* file;
   char* buffer;
 
   printf("Printing '%s' to the console...\n", file_name);
-  file = filesys_open(file_name);
-  if (file == NULL)
+  file = file_open(filesys_open(file_name, &is_dir));
+  if (file == NULL || is_dir) {
     PANIC("%s: open failed", file_name);
+  }
   buffer = palloc_get_page(PAL_ASSERT);
   for (;;) {
     off_t pos = file_tell(file);
@@ -105,10 +107,12 @@ void fsutil_extract(char** argv UNUSED) {
       printf("Putting '%s' into the file system...\n", file_name);
 
       /* Create destination file. */
-      if (!filesys_create(file_name, size))
+      if (!filesys_create(file_name, size, false))
         PANIC("%s: create failed", file_name);
-      dst = filesys_open(file_name);
-      if (dst == NULL)
+      
+      bool is_dir;
+      dst = file_open(filesys_open(file_name, &is_dir));
+      if (dst == NULL || is_dir)
         PANIC("%s: open failed", file_name);
 
       /* Do copy. */
@@ -163,8 +167,9 @@ void fsutil_append(char** argv) {
     PANIC("couldn't allocate buffer");
 
   /* Open source file. */
-  src = filesys_open(file_name);
-  if (src == NULL)
+  bool is_dir;
+  src = file_open(filesys_open(file_name, &is_dir));
+  if (src == NULL || is_dir)
     PANIC("%s: open failed", file_name);
   size = file_length(src);
 

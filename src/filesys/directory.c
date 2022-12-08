@@ -17,6 +17,7 @@ struct dir_entry {
   block_sector_t inode_sector; /* Sector number of header. */
   char name[NAME_MAX + 1];     /* Null terminated file name. */
   bool in_use;                 /* In use or free? */
+  bool is_dir;
 };
 
 /* Creates a directory with space for ENTRY_CNT entries in the
@@ -93,15 +94,17 @@ static bool lookup(const struct dir* dir, const char* name, struct dir_entry* ep
    and returns true if one exists, false otherwise.
    On success, sets *INODE to an inode for the file, otherwise to
    a null pointer.  The caller must close *INODE. */
-bool dir_lookup(const struct dir* dir, const char* name, struct inode** inode) {
+bool dir_lookup(const struct dir* dir, const char* name, struct inode** inode, bool* is_dir) {
   struct dir_entry e;
 
   ASSERT(dir != NULL);
   ASSERT(name != NULL);
 
-  if (lookup(dir, name, &e, NULL))
+  if (lookup(dir, name, &e, NULL)) {
     *inode = inode_open(e.inode_sector);
-  else
+    if(is_dir != NULL)
+      *is_dir = e.is_dir;
+  } else
     *inode = NULL;
 
   return *inode != NULL;
@@ -113,7 +116,7 @@ bool dir_lookup(const struct dir* dir, const char* name, struct inode** inode) {
    Returns true if successful, false on failure.
    Fails if NAME is invalid (i.e. too long) or a disk or memory
    error occurs. */
-bool dir_add(struct dir* dir, const char* name, block_sector_t inode_sector) {
+bool dir_add(struct dir* dir, const char* name, block_sector_t inode_sector, bool is_dir) {
   struct dir_entry e;
   off_t ofs;
   bool success = false;
@@ -142,6 +145,7 @@ bool dir_add(struct dir* dir, const char* name, block_sector_t inode_sector) {
 
   /* Write slot. */
   e.in_use = true;
+  e.is_dir = is_dir;
   strlcpy(e.name, name, sizeof e.name);
   e.inode_sector = inode_sector;
   success = inode_write_at(dir->inode, &e, sizeof e, ofs) == sizeof e;
