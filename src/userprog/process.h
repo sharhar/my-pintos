@@ -80,6 +80,7 @@ struct process {
   struct lock heap_lock;
 
   struct list files;
+  struct lock files_lock;
 
   struct lock children_lock;
 

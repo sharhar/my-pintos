@@ -46,6 +46,7 @@ void userprog_init(void) {
     lock_init(&t->pcb->children_lock);
     list_init(&t->pcb->children);
     list_init(&t->pcb->files);
+    lock_init(&t->pcb->files_lock);
 
     // t->pcb->parental_control_block->reference_count = 2;
     // t->pcb->parental_control_block->exit_code = -1;
@@ -203,6 +204,7 @@ static void start_process(void* _startInfo) {
   list_init(&t->pcb->heap_pages);
   lock_init(&t->pcb->heap_lock);
 
+  lock_init(&t->pcb->files_lock);
   lock_init(&t->pcb->threads_lock);
   lock_init(&t->pcb->locks_lock);
   lock_init(&t->pcb->semaphores_lock);
@@ -366,16 +368,11 @@ static void free_process_children(struct process* pcb) {
 static void close_process_files(struct process* pcb) {
   struct list_elem* e;
 
-  if(!lock_held_by_current_thread(&global_file_lock))
-    lock_acquire(&global_file_lock);
-
   for(e = list_begin(&pcb->files); e != list_end(&pcb->files); e = list_next(e)) {
     struct process_file* pf = list_entry(e, struct process_file, elem);
 
     file_close(pf->filePtr);
   }
-
-  lock_release(&global_file_lock);
 }
 
 /* Free the current process's resources. */
