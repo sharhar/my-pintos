@@ -131,6 +131,32 @@ static struct user_thread* get_thread_from_id(tid_t id) {
   return NULL;
 }
 
+static char* get_full_path(const char* filename) {
+  if(filename[0] == '/') {
+    size_t filename_len = strlen(filename);
+    char* result = malloc(filename_len + 1);
+    memcpy(result, filename, filename_len + 1);
+    return result;
+  }
+
+  lock_acquire(&thread_current()->pcb->working_directory_lock);
+
+  const char* pwd = thread_current()->pcb->working_directory;
+  size_t pwd_len = strlen(pwd);
+
+  size_t result_len = strlen(filename) + pwd_len + 1;
+
+  char* result = malloc(result_len + 1);
+  memcpy(result, pwd, pwd_len);
+  result[pwd_len] = '/';
+  memcpy(result + pwd_len + 1, filename, strlen(filename));
+  result[result_len] = '\0';
+
+  lock_release(&thread_current()->pcb->working_directory_lock);
+  
+  return result;
+}
+
 static void syscall_exit(int32_t* args, int32_t* f_eax) {
   *f_eax = args[1];
   process_exit(args[1]);
@@ -150,7 +176,9 @@ static void syscall_exec(uint32_t* args, uint32_t* f_eax) {
   char* filename = (char*)args[1];
   check_user_string(filename);
 
-  *f_eax = process_execute(filename);
+  char* my_filename = get_full_path(filename);
+  *f_eax = process_execute(my_filename);
+  free(my_filename);
 }
 
 static void syscall_wait(uint32_t* args, uint32_t* f_eax) {
@@ -165,14 +193,18 @@ static void syscall_create(uint32_t* args, uint32_t* f_eax) {
   char* filename = (char*)args[1];
   check_user_string(filename);
 
-  *f_eax = filesys_create(filename, (off_t) args[2], false);
+  char* my_filename = get_full_path(filename);
+  *f_eax = filesys_create(my_filename, (off_t) args[2], false);
+  free(my_filename);
 }
 
 static void syscall_remove(uint32_t* args, uint32_t* f_eax) {
   char* filename = (char*)args[1];
   check_user_string(filename);
 
-  *f_eax = filesys_remove(filename);
+  char* my_filename = get_full_path(filename);
+  *f_eax = filesys_remove(my_filename);
+  free(my_filename);
 }
 
 static void syscall_open(uint32_t* args, uint32_t* f_eax) {
@@ -180,7 +212,11 @@ static void syscall_open(uint32_t* args, uint32_t* f_eax) {
   check_user_string(filename);
 
   bool is_dir;
-  struct inode* my_inode = filesys_open(filename, &is_dir);
+
+  char* my_filename = get_full_path(filename);
+  struct inode* my_inode = filesys_open(my_filename, &is_dir);
+  free(my_filename);
+
   void* my_handle = is_dir ? dir_open(my_inode) : file_open(my_inode);
 
   if(my_handle == NULL) {
@@ -437,23 +473,77 @@ static void syscall_pthread_exit(uint32_t* args, uint32_t* f_eax) {
 }
 
 static void syscall_chdir(uint32_t* args, uint32_t* f_eax) {
+  char* filename = (char*)args[1];
+  check_user_string(filename);
 
+  char* my_filename = get_full_path(filename);
+  
+  lock_acquire(&thread_current()->pcb->working_directory_lock);
+
+  char* prev_dir = thread_current()->pcb->working_directory;
+  thread_current()->pcb->working_directory = my_filename;
+  free(prev_dir);
+
+  lock_release(&thread_current()->pcb->working_directory_lock);
+  
+  *f_eax = true;
 }
 
 static void syscall_mkdir(uint32_t* args, uint32_t* f_eax) {
+  char* filename = (char*)args[1];
+  check_user_string(filename);
 
+  char* my_filename = get_full_path(filename);
+
+  *f_eax = filesys_create(my_filename, 0, true);
+  free(my_filename);
 }
 
-static void syscall_readdir(uint32_t* args, uint32_t* f_eax) {
+#define READDIR_MAX_LEN 14
 
+static void syscall_readdir(uint32_t* args, uint32_t* f_eax) {
+  void* user_buffer = (void*)args[2];
+  check_user_pointer(user_buffer, READDIR_MAX_LEN + 1);
+  
+  struct process_file* proc_file = get_file_from_fd(&thread_current()->pcb->files, (int)args[1]);
+
+  if(proc_file == NULL || !proc_file->is_dir) {
+    *f_eax = false;
+    return;
+  }
+
+  struct dir* dir = proc_file->handle;
+
+  *f_eax = dir_readdir(dir, user_buffer); 
 }
 
 static void syscall_isdir(uint32_t* args, uint32_t* f_eax) {
+  struct process_file* proc_file = get_file_from_fd(&thread_current()->pcb->files, (int)args[1]);
 
+  if(proc_file == NULL) {
+    *f_eax = (uint32_t) ((int)-1);
+    return;
+  }
+
+  *f_eax = proc_file->is_dir;
 }
 
 static void syscall_inumber(uint32_t* args, uint32_t* f_eax) {
+ struct process_file* proc_file = get_file_from_fd(&thread_current()->pcb->files, (int)args[1]);
 
+  if(proc_file == NULL) {
+    *f_eax = (uint32_t) ((int)-1);
+    return;
+  }
+
+  struct inode* inode;
+
+  if(proc_file->is_dir)
+    inode = dir_get_inode(proc_file->handle);
+  else
+    inode = file_get_inode(proc_file->handle);
+
+  *f_eax = inode_get_inumber(inode);
 }
 
 static void syscall_handler(struct intr_frame* f) {
@@ -489,6 +579,11 @@ static void syscall_handler(struct intr_frame* f) {
     SYSCALL_ENTRY(SYS_PT_CREATE, syscall_pthread_create, 3)
     SYSCALL_ENTRY(SYS_PT_JOIN, syscall_pthread_join, 1)
     SYSCALL_ENTRY(SYS_PT_EXIT, syscall_pthread_exit, 0)
+    SYSCALL_ENTRY(SYS_CHDIR, syscall_chdir, 1)
+    SYSCALL_ENTRY(SYS_MKDIR, syscall_mkdir, 1)
+    SYSCALL_ENTRY(SYS_READDIR, syscall_readdir, 2)
+    SYSCALL_ENTRY(SYS_ISDIR, syscall_isdir, 1)
+    SYSCALL_ENTRY(SYS_INUMBER, syscall_inumber, 1)
   }
 
   thread_current()->in_syscall = false;

@@ -73,6 +73,8 @@ struct process {
   uint32_t* pagedir;          /* Page directory. */
   char process_name[16];      /* Name of the main thread */
   struct thread* main_thread; /* Pointer to main thread */
+  char* working_directory;
+  struct lock working_directory_lock;
 
   struct child_process* parental_control_block;
   struct list children;

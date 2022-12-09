@@ -64,10 +64,15 @@ void userprog_init(void) {
 
     t->pcb->next_lock_ID = 0;
     t->pcb->next_sema_ID = 0;
+    t->pcb->working_directory = malloc(2);
+    t->pcb->working_directory[0] = '/';
+    t->pcb->working_directory[1] = '\0';
 
     list_init(&t->pcb->user_threads);
     list_init(&t->pcb->user_locks);
     list_init(&t->pcb->user_semaphores);
+
+    lock_init(&t->pcb->working_directory_lock);
   }
   /* Kill the kernel if we did not succeed */
   ASSERT(success);
@@ -78,6 +83,7 @@ struct process_start_info {
   struct semaphore* sema;
   bool* exec_success;
   char* filename;
+  char* working_dir;
 };
 
 /* Starts a new thread running a user program loaded from
@@ -98,13 +104,22 @@ pid_t process_execute(const char* file_name) {
   fn_copy = palloc_get_page(0);
   if (fn_copy == NULL)
     return -1;
-  
+
   fn_copy->newProc = newProc;
   fn_copy->sema = &sema;
   fn_copy->exec_success = &exec_success;
   fn_copy->filename = ((char*)fn_copy) + sizeof(struct process_start_info);
-  
   strlcpy(fn_copy->filename, file_name, PGSIZE - sizeof(struct process_start_info));
+
+  lock_acquire(&thread_current()->pcb->working_directory_lock);
+
+  char* curr_dir = thread_current()->pcb->working_directory;
+  size_t curr_dir_len = strlen(curr_dir);
+
+  fn_copy->working_dir = malloc(curr_dir_len + 1);
+  memcpy(fn_copy->working_dir, curr_dir, curr_dir_len + 1);
+
+  lock_release(&thread_current()->pcb->working_directory_lock);
 
   /* since the file_name variable contains both the filename
      and the arguments, we have to parse out just the filename
@@ -112,13 +127,17 @@ pid_t process_execute(const char* file_name) {
      have the wrong name and it messes with the autograder. */
   size_t filenameLen = strlen(file_name);
   size_t real_file_name_len = 0;
+  off_t path_off = 0;
 
   for(; real_file_name_len < filenameLen; real_file_name_len++) {
+    if(file_name[real_file_name_len] == '/')
+      path_off = real_file_name_len + 1;
+
     if(file_name[real_file_name_len] == ' ') break; 
   }
 
-  char real_file_name[real_file_name_len+1];
-  strlcpy(real_file_name, file_name, real_file_name_len+1);
+  char real_file_name[real_file_name_len+1-path_off];
+  strlcpy(real_file_name, file_name+path_off, real_file_name_len+1-path_off);
 
   /* Create a new thread to execute FILE_NAME. */
   if (thread_create(real_file_name, PRI_DEFAULT, start_process, fn_copy) == NULL)
@@ -186,12 +205,17 @@ static void start_process(void* _startInfo) {
   struct semaphore* start_sema = startInfo->sema;
   bool* exec_success = startInfo->exec_success;
 
+  char* work_dir = startInfo->working_dir;
+
   /* Clean up. Exit on failure or jump to userspace */
   palloc_free_page(_startInfo);
   if (!success) {
+    free(work_dir);
     sema_up(start_sema);
     thread_exit();
   }
+
+  t->pcb->working_directory = work_dir;
 
   /* In this section we initialize all the variables in struct process */
   t->pcb->parental_control_block->reference_count = 2;
@@ -219,6 +243,7 @@ static void start_process(void* _startInfo) {
   list_init(&t->pcb->user_locks);
   list_init(&t->pcb->user_semaphores);
 
+  lock_init(&t->pcb->working_directory_lock);
 
   /* In this section we finish intilizing the lists in 
      struct process by adding all the initial elements
@@ -414,6 +439,8 @@ void process_exit(int exit_code) {
 
   free_process_children(pcb);
   close_process_files(pcb);
+
+  free(pcb->working_directory);
   
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -642,7 +669,7 @@ bool load(const char* file_name, void (**eip)(void), void** esp, struct file** f
   file = file_open(filesys_open(file_name, &is_dir));
   if (file == NULL || is_dir) {
     file_close(file);
-    printf("load: %s: open failed\n", file_name);
+    printf("load: %s: open failed\n", t->name);
     goto done;
   }
 
@@ -652,7 +679,7 @@ bool load(const char* file_name, void (**eip)(void), void** esp, struct file** f
   if (file_read(file, &ehdr, sizeof ehdr) != sizeof ehdr ||
       memcmp(ehdr.e_ident, "\177ELF\1\1\1", 7) || ehdr.e_type != 2 || ehdr.e_machine != 3 ||
       ehdr.e_version != 1 || ehdr.e_phentsize != sizeof(struct Elf32_Phdr) || ehdr.e_phnum > 1024) {
-    printf("load: %s: error loading executable\n", file_name);
+    printf("load: %s: error loading executable\n", t->name);
     goto done;
   }
 
