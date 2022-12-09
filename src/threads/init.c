@@ -313,7 +313,7 @@ static void run_task(char** argv) {
 
   printf("Executing '%s':\n", task);
 #ifdef USERPROG
-  process_wait(process_execute(task));
+  process_wait(process_execute(task, task));
 #endif
   printf("Execution of '%s' complete.\n", task);
 }

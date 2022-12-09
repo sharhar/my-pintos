@@ -102,7 +102,7 @@ struct process {
 
 void userprog_init(void);
 
-pid_t process_execute(const char* file_name);
+pid_t process_execute(const char* file_name, const char* args);
 int process_wait(pid_t);
 void process_exit(int exit_code);
 void process_activate(void);

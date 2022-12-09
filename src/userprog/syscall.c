@@ -177,7 +177,7 @@ static void syscall_exec(uint32_t* args, uint32_t* f_eax) {
   check_user_string(filename);
 
   char* my_filename = get_full_path(filename);
-  *f_eax = process_execute(my_filename);
+  *f_eax = process_execute(my_filename, filename);
   free(my_filename);
 }
 
