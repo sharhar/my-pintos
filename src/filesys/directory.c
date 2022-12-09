@@ -8,6 +8,7 @@
 
 /* A directory. */
 struct dir {
+  block_sector_t parent;
   struct inode* inode; /* Backing store. */
   off_t pos;           /* Current position. */
 };
@@ -23,7 +24,7 @@ struct dir_entry {
 /* Creates a directory with space for ENTRY_CNT entries in the
    given SECTOR.  Returns true if successful, false on failure. */
 bool dir_create(block_sector_t sector, size_t entry_cnt) {
-  return inode_create(sector, 0);
+  return inode_create(sector, sizeof(block_sector_t));
 }
 
 /* Opens and returns the directory for the given INODE, of which
@@ -32,7 +33,8 @@ struct dir* dir_open(struct inode* inode) {
   struct dir* dir = calloc(1, sizeof *dir);
   if (inode != NULL && dir != NULL) {
     dir->inode = inode;
-    dir->pos = 0;
+    dir->pos = sizeof(block_sector_t);
+    inode_read_at(inode, &dir->parent, sizeof(block_sector_t), 0);
     return dir;
   } else {
     inode_close(inode);
@@ -78,7 +80,7 @@ static bool lookup(const struct dir* dir, const char* name, struct dir_entry* ep
   ASSERT(dir != NULL);
   ASSERT(name != NULL);
 
-  for (ofs = 0; inode_read_at(dir->inode, &e, sizeof e, ofs) == sizeof e; ofs += sizeof e)
+  for (ofs = sizeof(block_sector_t); inode_read_at(dir->inode, &e, sizeof e, ofs) == sizeof e; ofs += sizeof e)
     if (e.in_use && !strcmp(name, e.name)) {
       if (ep != NULL)
         *ep = e;
@@ -99,6 +101,18 @@ bool dir_lookup(const struct dir* dir, const char* name, struct inode** inode, b
 
   ASSERT(dir != NULL);
   ASSERT(name != NULL);
+
+  size_t name_len = strlen(name);
+
+  if(name_len == 1 && name[0] == '.') {
+    *inode = inode_reopen(dir->inode);
+    return true;
+  }
+
+  if(name_len == 2 && name[0] == '.' && name[1] == '.') {
+    *inode = inode_open(dir->parent);
+    return true;
+  }
 
   if (lookup(dir, name, &e, NULL)) {
     *inode = inode_open(e.inode_sector);
@@ -139,7 +153,7 @@ bool dir_add(struct dir* dir, const char* name, block_sector_t inode_sector, boo
      inode_read_at() will only return a short read at end of file.
      Otherwise, we'd need to verify that we didn't get a short
      read due to something intermittent such as low memory. */
-  for (ofs = 0; inode_read_at(dir->inode, &e, sizeof e, ofs) == sizeof e; ofs += sizeof e)
+  for (ofs = sizeof(block_sector_t); inode_read_at(dir->inode, &e, sizeof e, ofs) == sizeof e; ofs += sizeof e)
     if (!e.in_use)
       break;
 

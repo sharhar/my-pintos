@@ -211,8 +211,12 @@ static void syscall_open(uint32_t* args, uint32_t* f_eax) {
   char* filename = (char*)args[1];
   check_user_string(filename);
 
-  bool is_dir;
+  if(strlen(filename) == 0) {
+    *f_eax = (uint32_t) ((int)-1);
+    return;
+  }
 
+  bool is_dir;
   char* my_filename = get_full_path(filename);
   struct inode* my_inode = filesys_open(my_filename, &is_dir);
   free(my_filename);

@@ -12,6 +12,7 @@
 struct block* fs_device;
 
 static void do_format(void);
+static void set_dir_parent(block_sector_t sector, block_sector_t parent);
 
 /* Initializes the file system module.
    If FORMAT is true, reformats the file system. */
@@ -27,6 +28,8 @@ void filesys_init(bool format) {
     do_format();
 
   free_map_open();
+
+  set_dir_parent(ROOT_DIR_SECTOR, ROOT_DIR_SECTOR);
 }
 
 /* Shuts down the file system module, writing any unwritten data
@@ -92,6 +95,7 @@ static bool to_absoulte_path(char* result, const char* path) {
 }
 
 static struct inode* get_inode_from_path(const char* name, struct dir** parent_dir, char* file_name, bool* is_dir) {
+  /*
   char* clean_path = calloc(strlen(name) + 1, 1);
 
   void* clean_path_mem = clean_path;
@@ -108,20 +112,24 @@ static struct inode* get_inode_from_path(const char* name, struct dir** parent_d
     return NULL;
   }
 
+  */
+
+  char* my_name = name;
+
   struct inode* result = inode_open(ROOT_DIR_SECTOR);
   struct dir* curr_dir = NULL;
 
   char part[NAME_MAX + 1];
   while(true) {
-    int part_len = get_next_part(part, &clean_path);
+    int part_len = get_next_part(part, &my_name);
     if(part_len == 0) {
       *parent_dir = curr_dir;
-      free(clean_path_mem);
+      //free(clean_path_mem);
       return result;
     } else if(part_len == -1) {
       dir_close(curr_dir);
       *parent_dir = NULL;
-      free(clean_path_mem);
+      //free(clean_path_mem);
       return NULL;
     }
 
@@ -130,7 +138,7 @@ static struct inode* get_inode_from_path(const char* name, struct dir** parent_d
     curr_dir = dir_open(result);
     if(curr_dir == NULL) {
       *parent_dir = NULL;
-      free(clean_path_mem);
+      //free(clean_path_mem);
       return NULL;
     }
 
@@ -139,7 +147,7 @@ static struct inode* get_inode_from_path(const char* name, struct dir** parent_d
     dir_lookup(curr_dir, part, &result, is_dir);
   }
 
-  free(clean_path_mem);
+  //free(clean_path_mem);
 
   return NULL;
 }
@@ -179,6 +187,9 @@ bool filesys_create(const char* name, off_t initial_size, bool is_dir) {
     dir_close(dir);
     return false;
   }
+
+  if(is_dir)
+    set_dir_parent(inode_sector, inode_get_inumber(dir_get_inode(dir)));
 
   dir_close(dir);
 
@@ -245,4 +256,10 @@ static void do_format(void) {
     PANIC("root directory creation failed");
   free_map_close();
   printf("done.\n");
+}
+
+static void set_dir_parent(block_sector_t sector, block_sector_t parent) {
+  struct inode* inode = inode_open(sector);
+  inode_write_at(inode, &parent, sizeof(block_sector_t), 0);
+  inode_close(inode);
 }
