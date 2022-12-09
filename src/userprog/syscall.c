@@ -481,6 +481,12 @@ static void syscall_chdir(uint32_t* args, uint32_t* f_eax) {
   check_user_string(filename);
 
   char* my_filename = get_full_path(filename);
+
+  bool is_dir;
+  struct inode* my_inode = filesys_open(my_filename, &is_dir);
+  inode_close(my_inode);
+
+  SYSCALL_RETURN_FALSE_IF(my_inode == NULL || !is_dir)
   
   lock_acquire(&thread_current()->pcb->working_directory_lock);
 

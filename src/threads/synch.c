@@ -124,6 +124,13 @@ void sema_up(struct semaphore* sema) {
   }
 
   if(to_be_unblocked != NULL) {
+    if(&to_be_unblocked->elem == 0xcccccccc) {
+      printf("ELEM = %p\n", list_begin(&sema->waiters));
+      printf("LIST = %p\n", &sema->waiters);
+      printf("BEGN = %p\n", sema->waiters.head);
+      printf("ENDD = %p\n", sema->waiters.tail);
+    }
+
     list_remove(&to_be_unblocked->elem);
     to_be_unblocked->waiting_for_lock = NULL;
     thread_unblock(to_be_unblocked);

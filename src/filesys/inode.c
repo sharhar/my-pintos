@@ -204,7 +204,6 @@ struct inode* inode_open(block_sector_t sector) {
 
   lock_release(&open_inodes_lock);
 
-
   return inode;
 }
 
@@ -212,7 +211,7 @@ struct inode* inode_open(block_sector_t sector) {
 struct inode* inode_reopen(struct inode* inode) {
   if (inode != NULL)
     inode->open_cnt++;
-
+  
   return inode;
 }
 

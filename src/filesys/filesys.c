@@ -167,8 +167,8 @@ bool filesys_remove(const char* name) {
   struct dir* dir;
   char file_name[NAME_MAX + 1];
   bool is_dir;
-  struct inode* search_result = get_inode_from_path(name, &dir, file_name, &is_dir);\
-  
+  struct inode* search_result = get_inode_from_path(name, &dir, file_name, &is_dir);
+
   if(search_result == NULL || dir == NULL) {
     inode_close(search_result);
     dir_close(dir);
@@ -185,9 +185,9 @@ bool filesys_remove(const char* name) {
     }
 
     dir_close(my_dir);
+  } else {
+    inode_close(search_result);
   }
-
-  inode_close(search_result);
 
   bool success = dir_remove(dir, file_name);
 
