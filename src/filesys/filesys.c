@@ -66,54 +66,7 @@ static int get_next_part(char part[NAME_MAX + 1], const char** srcp) {
   return copy_amount;
 }
 
-static bool to_absoulte_path(char* result, const char* path) {
-  int part_len = 0;
-  int32_t result_off = 0;
-  do {
-    result[result_off] = '/';
-    result_off++;
-    part_len = get_next_part(&result[result_off], &path);
-
-    if(part_len == -1)
-      return false;
-    
-    if(part_len == 1 && result[result_off] == '.') {
-      result_off--;
-    } else if(part_len == 2 && result[result_off] == '.' && result[result_off+1] == '.') {
-      result_off -= 2;
-
-      for(;result_off >= 0 && result[result_off] != '/'; result_off--);
-    } else {
-      result_off += part_len;
-    }
-    
-  } while(part_len > 0);
-
-  result[result_off-1] = '\0';
-
-  return true;
-}
-
 static struct inode* get_inode_from_path(const char* name, struct dir** parent_dir, char* file_name, bool* is_dir) {
-  /*
-  char* clean_path = calloc(strlen(name) + 1, 1);
-
-  void* clean_path_mem = clean_path;
-
-  if(!to_absoulte_path(clean_path, name)) {
-    *parent_dir = NULL;
-    free(clean_path_mem);
-    return NULL;
-  }
-
-  if(strlen(clean_path) == 0) {
-    *parent_dir = NULL;
-    free(clean_path_mem);
-    return NULL;
-  }
-
-  */
-
   char* my_name = name;
 
   struct inode* result = inode_open(ROOT_DIR_SECTOR);
@@ -124,12 +77,10 @@ static struct inode* get_inode_from_path(const char* name, struct dir** parent_d
     int part_len = get_next_part(part, &my_name);
     if(part_len == 0) {
       *parent_dir = curr_dir;
-      //free(clean_path_mem);
       return result;
     } else if(part_len == -1) {
       dir_close(curr_dir);
       *parent_dir = NULL;
-      //free(clean_path_mem);
       return NULL;
     }
 
@@ -138,7 +89,6 @@ static struct inode* get_inode_from_path(const char* name, struct dir** parent_d
     curr_dir = dir_open(result);
     if(curr_dir == NULL) {
       *parent_dir = NULL;
-      //free(clean_path_mem);
       return NULL;
     }
 
@@ -146,8 +96,6 @@ static struct inode* get_inode_from_path(const char* name, struct dir** parent_d
 
     dir_lookup(curr_dir, part, &result, is_dir);
   }
-
-  //free(clean_path_mem);
 
   return NULL;
 }
