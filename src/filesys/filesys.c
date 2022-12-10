@@ -7,6 +7,7 @@
 #include "filesys/inode.h"
 #include "filesys/directory.h"
 #include <threads/malloc.h>
+#include <userprog/process.h>
 
 /* Partition that contains the file system. */
 struct block* fs_device;
@@ -66,11 +67,25 @@ static int get_next_part(char part[NAME_MAX + 1], const char** srcp) {
   return copy_amount;
 }
 
+static block_sector_t get_cwd_sector(const char* name) {
+  struct process* pcb = thread_current()->pcb;
+
+  if(name[0] == '/' || pcb == NULL)
+    return ROOT_DIR_SECTOR;
+  
+  return pcb->cwd_sector;
+}
+
 static struct inode* get_inode_from_path(const char* name, struct dir** parent_dir, char* file_name, bool* is_dir) {
   char* my_name = name;
 
-  struct inode* result = inode_open(ROOT_DIR_SECTOR);
+  struct inode* result = inode_open(get_cwd_sector(name));
   struct dir* curr_dir = NULL;
+
+  block_sector_t cwd_sector = inode_get_inumber(result);
+
+  if(is_dir != NULL)
+    *is_dir = true;
 
   char part[NAME_MAX + 1];
   while(true) {
@@ -93,7 +108,7 @@ static struct inode* get_inode_from_path(const char* name, struct dir** parent_d
     }
 
     memcpy(file_name, part, NAME_MAX + 1);
-
+    
     dir_lookup(curr_dir, part, &result, is_dir);
   }
 
@@ -107,6 +122,7 @@ static struct inode* get_inode_from_path(const char* name, struct dir** parent_d
 bool filesys_create(const char* name, off_t initial_size, bool is_dir) {
   struct dir* dir;
   char file_name[NAME_MAX + 1];
+
   struct inode* search_result = get_inode_from_path(name, &dir, file_name, NULL);
 
   if(search_result != NULL || dir == NULL) {
@@ -125,6 +141,19 @@ bool filesys_create(const char* name, off_t initial_size, bool is_dir) {
     free_map_release(inode_sector, 1);
     dir_close(dir);
     return false;
+  }
+
+  if(is_dir) {
+    set_dir_parent(inode_sector, inode_get_inumber(dir_get_inode(dir)));
+    struct dir* new_dir = dir_open(inode_open(inode_sector));
+
+    if(new_dir == NULL) {
+      free_map_release(inode_sector, 1);
+      dir_close(dir);
+      return false;
+    }
+
+    dir_close(new_dir);
   }
 
   if(!dir_add(dir, file_name, inode_sector, is_dir)) {
@@ -179,7 +208,7 @@ bool filesys_remove(const char* name) {
     struct dir* my_dir = dir_open(search_result);
     char temp[NAME_MAX + 1];
     
-    if(dir_readdir(my_dir, temp)) {
+    if(dir_readdir(my_dir, temp) || inode_open_count(dir_get_inode(my_dir)) > 1) {
       dir_close(my_dir);
       return false;
     }

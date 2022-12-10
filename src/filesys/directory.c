@@ -34,7 +34,15 @@ struct dir* dir_open(struct inode* inode) {
   if (inode != NULL && dir != NULL) {
     dir->inode = inode;
     dir->pos = sizeof(block_sector_t);
+    dir->parent = 0;
     inode_read_at(inode, &dir->parent, sizeof(block_sector_t), 0);
+    
+    if(dir->parent == 0) {
+      inode_close(inode);
+      free(dir);
+      return NULL;
+    }
+    
     return dir;
   } else {
     inode_close(inode);
@@ -105,12 +113,15 @@ bool dir_lookup(const struct dir* dir, const char* name, struct inode** inode, b
   size_t name_len = strlen(name);
 
   if(name_len == 1 && name[0] == '.') {
+    *is_dir = true;
     *inode = inode_reopen(dir->inode);
     return true;
   }
 
   if(name_len == 2 && name[0] == '.' && name[1] == '.') {
+    *is_dir = true;
     *inode = inode_open(dir->parent);
+
     return true;
   }
 

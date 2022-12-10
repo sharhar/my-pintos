@@ -10,6 +10,7 @@
 #include "userprog/pagedir.h"
 #include "userprog/tss.h"
 #include "filesys/directory.h"
+#include "filesys/inode.h"
 #include "filesys/file.h"
 #include "filesys/filesys.h"
 #include "threads/flags.h"
@@ -24,7 +25,7 @@
 
 static thread_func start_process NO_RETURN;
 static thread_func start_pthread NO_RETURN;
-static bool load(char* file_name, const char* proc_args, void (**eip)(void), void** esp, struct file** filePtr);
+static bool load(char* file_name, void (**eip)(void), void** esp, struct file** filePtr);
 void setup_thread(void (**eip)(void), void** esp, void* sfun, void* tfun, void* arg);
 
 /* Initializes user programs in the system by ensuring the main
@@ -64,15 +65,14 @@ void userprog_init(void) {
 
     t->pcb->next_lock_ID = 0;
     t->pcb->next_sema_ID = 0;
-    t->pcb->working_directory = malloc(2);
-    t->pcb->working_directory[0] = '/';
-    t->pcb->working_directory[1] = '\0';
+    t->pcb->cwd = dir_open_root();
+    t->pcb->cwd_sector = ROOT_DIR_SECTOR;
 
     list_init(&t->pcb->user_threads);
     list_init(&t->pcb->user_locks);
     list_init(&t->pcb->user_semaphores);
 
-    lock_init(&t->pcb->working_directory_lock);
+    lock_init(&t->pcb->cwd_lock);
   }
   /* Kill the kernel if we did not succeed */
   ASSERT(success);
@@ -82,16 +82,15 @@ struct process_start_info {
   struct child_process* newProc;
   struct semaphore* sema;
   bool* exec_success;
-  char* proc_args;
+  block_sector_t cwd_sector;
   char* filename;
-  char* working_dir;
 };
 
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
    before process_execute() returns.  Returns the new process's
    process id, or TID_ERROR if the thread cannot be created. */
-pid_t process_execute(const char* file_name, const char* args) {
+pid_t process_execute(const char* file_name) {
   struct process_start_info* fn_copy;
 
   struct child_process* newProc = malloc(sizeof(struct child_process));
@@ -109,23 +108,14 @@ pid_t process_execute(const char* file_name, const char* args) {
   fn_copy->newProc = newProc;
   fn_copy->sema = &sema;
   fn_copy->exec_success = &exec_success;
+
+  lock_acquire(&thread_current()->pcb->cwd_lock);
+  fn_copy->cwd_sector = thread_current()->pcb->cwd_sector;
+  lock_release(&thread_current()->pcb->cwd_lock);
+
   fn_copy->filename = ((char*)fn_copy) + sizeof(struct process_start_info);
   strlcpy(fn_copy->filename, file_name, PGSIZE - sizeof(struct process_start_info));
-
-  fn_copy->proc_args = malloc(strlen(args) + 1);
-  memcpy(fn_copy->proc_args, args, strlen(args) + 1);
-  //((char*)fn_copy) + sizeof(struct process_start_info) + strlen(fn_copy->filename) + 2;
-  //strlcpy(fn_copy->proc_args, file_name, PGSIZE - sizeof(struct process_start_info));
-
-  lock_acquire(&thread_current()->pcb->working_directory_lock);
-
-  char* curr_dir = thread_current()->pcb->working_directory;
-  size_t curr_dir_len = strlen(curr_dir);
-
-  fn_copy->working_dir = malloc(curr_dir_len + 1);
-  memcpy(fn_copy->working_dir, curr_dir, curr_dir_len + 1);
-
-  lock_release(&thread_current()->pcb->working_directory_lock);
+  
 
   /* since the file_name variable contains both the filename
      and the arguments, we have to parse out just the filename
@@ -186,6 +176,7 @@ static void start_process(void* _startInfo) {
     t->pcb = new_pcb;
 
     t->pcb->parental_control_block = startInfo->newProc;
+    t->pcb->cwd_sector = startInfo->cwd_sector;
 
     // Continue initializing the PCB as normal
     t->pcb->main_thread = t;
@@ -195,9 +186,7 @@ static void start_process(void* _startInfo) {
     if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
     if_.cs = SEL_UCSEG;
     if_.eflags = FLAG_IF | FLAG_MBS;
-    success = load(file_name, startInfo->proc_args, &if_.eip, &if_.esp, &proc_file_handle);
-
-    free(startInfo->proc_args);
+    success = load(file_name, &if_.eip, &if_.esp, &proc_file_handle);
   }
 
   /* Handle failure with succesful PCB malloc. Must free the PCB */
@@ -213,17 +202,14 @@ static void start_process(void* _startInfo) {
   struct semaphore* start_sema = startInfo->sema;
   bool* exec_success = startInfo->exec_success;
 
-  char* work_dir = startInfo->working_dir;
-
   /* Clean up. Exit on failure or jump to userspace */
   palloc_free_page(_startInfo);
   if (!success) {
-    free(work_dir);
     sema_up(start_sema);
     thread_exit();
   }
-
-  t->pcb->working_directory = work_dir;
+  
+  t->pcb->cwd = dir_open(inode_open(t->pcb->cwd_sector));
 
   /* In this section we initialize all the variables in struct process */
   t->pcb->parental_control_block->reference_count = 2;
@@ -251,7 +237,7 @@ static void start_process(void* _startInfo) {
   list_init(&t->pcb->user_locks);
   list_init(&t->pcb->user_semaphores);
 
-  lock_init(&t->pcb->working_directory_lock);
+  lock_init(&t->pcb->cwd_lock);
 
   /* In this section we finish intilizing the lists in 
      struct process by adding all the initial elements
@@ -448,7 +434,7 @@ void process_exit(int exit_code) {
   free_process_children(pcb);
   close_process_files(pcb);
 
-  free(pcb->working_directory);
+  dir_close(pcb->cwd);
   
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -619,7 +605,7 @@ static bool load_segment(struct file* file, off_t ofs, uint8_t* upage, uint32_t 
    Stores the executable's entry point into *EIP
    and its initial stack pointer into *ESP.
    Returns true if successful, false otherwise. */
-bool load(char* file_name, const char* proc_args, void (**eip)(void), void** esp, struct file** filePtr) {
+bool load(char* file_name, void (**eip)(void), void** esp, struct file** filePtr) {
   struct thread* t = thread_current();
   struct Elf32_Ehdr ehdr;
   struct file* file = NULL;
@@ -632,14 +618,14 @@ bool load(char* file_name, const char* proc_args, void (**eip)(void), void** esp
      in which we will put the arguments and argv. */
 
   
-  size_t filenameLen = strlen(proc_args);
+  size_t filenameLen = strlen(file_name);
   size_t argc_max = 2;
 
   for(size_t i = 0; i < filenameLen; i++) {
-    if(proc_args[i] == ' ') argc_max++;
+    if(file_name[i] == ' ') argc_max++;
   }
 
-  size_t argv_size = argc_max * 4 + strlen(proc_args) + 1; // size of argv buffer
+  size_t argv_size = argc_max * 4 + strlen(file_name) + 1; // size of argv buffer
   char argvMem[argv_size]; // allocating space on stack for argv buffer
   char** argv = (char**) argvMem; // recast the stack pointer to char** for 
                                   // actually writting the pointers to the arguments
@@ -649,10 +635,10 @@ bool load(char* file_name, const char* proc_args, void (**eip)(void), void** esp
                                                                           // arguments are located after they 
                                                                           // will be placed on the user's stack
 
-  /* This section of code actually parses proc_args and 
+  /* This section of code actually parses file_name and 
      sets up the argv buffer with all the argument data. */
   char* token;
-  char* rest = (char*) proc_args;
+  char* rest = (char*) file_name;
   int argc = 0;
   while ((token = strtok_r(rest, " ", &rest))) {
     size_t tokenSize = strlen(token)+1;

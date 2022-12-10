@@ -31,6 +31,10 @@ struct inode {
   struct rw_lock lock;
 };
 
+int inode_open_count(struct inode* inode) {
+  return inode->open_cnt;
+}
+
 enum AccessMode {
   MODE_READ_ONLY,
   MODE_READ_AND_WRITE
@@ -121,6 +125,31 @@ static off_t page_list_get_length(block_sector_t* page_list) {
   }
 }
 
+static void delete_inode_content(block_sector_t sector) {
+  block_sector_t* page_list = malloc(512);
+  block_read(fs_device, sector, page_list);
+
+  for(int i = 0; i < PAGE_ENTRY_COUNT; i++) {
+    if(!block_exists(page_list[i]))
+      continue;
+    
+    block_sector_t curr_page = GET_SECTOR(page_list[i]);
+    
+    block_sector_t* sector_list = block_map_sector(fs_device, curr_page, true);
+
+    for(int j = 0; j < PAGE_ENTRY_COUNT; j++)
+      if(block_exists(sector_list[j]))
+        free_map_release(GET_SECTOR(sector_list[j]), 1);
+
+    block_unmap_sector(fs_device, curr_page, false);
+    free_map_release(curr_page, 1);
+  }
+
+  free_map_release(sector, 1);
+
+  free(page_list);
+}
+
 /* Initializes an inode with LENGTH bytes of data and
    writes the new inode to sector SECTOR on the file system
    device.
@@ -135,17 +164,25 @@ bool inode_create(block_sector_t sector, off_t length) {
   void* zero_buff = malloc(BLOCK_SECTOR_SIZE);
   memset(zero_buff, 0, BLOCK_SECTOR_SIZE);
 
+  bool error = false;
   block_sector_t* page_list = malloc(BLOCK_SECTOR_SIZE);
-
   for(int i = 0; i < PAGE_ENTRY_COUNT; i++) {
     if(i < page_num) {
-      free_map_allocate(1, &page_list[i]);
+      if(!free_map_allocate(1, &page_list[i])) {
+        error = true;
+        break;
+      }
 
       block_sector_t* sector_list = block_map_sector(fs_device, page_list[i], false);
 
       for(int j = 0; j < PAGE_ENTRY_COUNT; j++) {
         if(sectors_left > 0) {
-          free_map_allocate(1, &sector_list[j]);
+          if(!free_map_allocate(1, &sector_list[j])) {
+            page_num = 0;
+            error = true;
+            break;
+          }
+
           block_write_direct(fs_device, sector_list[j], zero_buff);
           sectors_left--;
         } else {
@@ -166,6 +203,9 @@ bool inode_create(block_sector_t sector, off_t length) {
 
   free(page_list);
   free(zero_buff);
+
+  //if(error)
+  //  delete_inode_content(sector);
 
   return true;
 }
@@ -234,33 +274,8 @@ void inode_close(struct inode* inode) {
     /* Deallocate blocks if removed. */
     if (inode->removed) {
       rw_lock_acquire(&inode->lock, false);
-
-      block_sector_t* page_list = malloc(512);
-      block_read(fs_device, inode->sector, page_list);
-
-      for(int i = 0; i < PAGE_ENTRY_COUNT; i++) {
-        if(!block_exists(page_list[i]))
-          continue;
-        
-        block_sector_t curr_page = GET_SECTOR(page_list[i]);
-        
-        block_sector_t* sector_list = block_map_sector(fs_device, curr_page, true);
-
-        for(int j = 0; j < PAGE_ENTRY_COUNT; j++)
-          if(block_exists(sector_list[j]))
-            free_map_release(GET_SECTOR(sector_list[j]), 1);
-
-        block_unmap_sector(fs_device, curr_page, false);
-        free_map_release(curr_page, 1);
-      }
-
-      free_map_release(inode->sector, 1);
-
-      free(page_list);
+      delete_inode_content(inode->sector);
       rw_lock_release(&inode->lock, false);
-      
-      //free_map_release(inode->sector, 1);
-      //free_map_release(inode->data.start, bytes_to_sectors(inode->data.length));
     }
 
     free(inode);
@@ -346,6 +361,11 @@ off_t inode_write_at(struct inode* inode, const void* buffer_, off_t size, off_t
     /* Sector to write, starting byte offset within sector. */
     block_sector_t sector_idx = byte_to_sector(inode, offset, true);
     int sector_ofs = offset % BLOCK_SECTOR_SIZE;
+
+    if(sector_idx == BLOCK_SECTOR_NONE) {
+      rw_lock_release(&inode->lock, false);
+      return bytes_written;
+    }
 
     /* Bytes left in inode, bytes left in sector, lesser of the two. */
     off_t inode_left = inode_len - offset;

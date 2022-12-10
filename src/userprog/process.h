@@ -3,6 +3,7 @@
 
 #include "threads/thread.h"
 #include <stdint.h>
+#include <devices/block.h>
 
 typedef char lock_t;
 typedef char sema_t;
@@ -73,8 +74,10 @@ struct process {
   uint32_t* pagedir;          /* Page directory. */
   char process_name[16];      /* Name of the main thread */
   struct thread* main_thread; /* Pointer to main thread */
-  char* working_directory;
-  struct lock working_directory_lock;
+
+  block_sector_t cwd_sector;
+  struct dir* cwd;
+  struct lock cwd_lock;
 
   struct child_process* parental_control_block;
   struct list children;
@@ -102,7 +105,7 @@ struct process {
 
 void userprog_init(void);
 
-pid_t process_execute(const char* file_name, const char* args);
+pid_t process_execute(const char* file_name);
 int process_wait(pid_t);
 void process_exit(int exit_code);
 void process_activate(void);
